@@ -1,0 +1,18 @@
+# Copier ce fichier en terraform.tfvars et l'adapter.
+
+# Reçoit les confirmations de commande, les alarmes et l'alerte budget.
+# (Cliquer sur le lien "Confirm subscription" reçu par mail après chaque up.)
+notification_email = "vous@example.com"
+
+# Solutions déployées
+deploy_serverless = true
+deploy_vm         = true
+
+# Options payantes (hors Free Tier)
+enable_msk     = false # Kafka : ~0,10 $/h + 20-30 min de création
+enable_kms_cmk = false # clé KMS client : 1 $/mois
+vm_min_size    = 1     # 2 = haute dispo réelle sur 2 AZ (2e instance hors Free Tier)
+db_multi_az    = false # RDS Multi-AZ (payant)
+
+# Nom de domaine (zone Route 53 existante), vide = URL CloudFront
+route53_zone_name = ""

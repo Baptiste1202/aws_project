@@ -1,0 +1,51 @@
+#!/bin/bash
+# Démarrage d'une instance applicative (Amazon Linux 2023).
+# Version applicative : ${app_version}
+set -euxo pipefail
+
+dnf install -y python3-pip
+mkdir -p /opt/shop/static
+# Environnement Python isolé : pas de conflit avec les paquets RPM du système.
+python3 -m venv /opt/shop/venv
+/opt/shop/venv/bin/pip install --quiet boto3 psycopg2-binary
+%{ if kafka_bootstrap != "" ~}
+/opt/shop/venv/bin/pip install --quiet kafka-python
+%{ endif ~}
+
+aws s3 cp "s3://${bucket}/vm-app/" /opt/shop/ --recursive --region ${region}
+aws s3 cp "s3://${bucket}/web/" /opt/shop/static/ --recursive --region ${region}
+
+cat > /etc/shop.env <<'EOF'
+AWS_REGION=${region}
+PORT=8080
+STATIC_DIR=/opt/shop/static
+PRODUCTS_FILE=/opt/shop/products.json
+DB_HOST=${db_host}
+DB_NAME=${db_name}
+DB_USER=${db_user}
+DB_PASSWORD_PARAM=${db_password_param}
+TOPIC_ARN=${topic_arn}
+QUEUE_URL=${queue_url}
+KAFKA_BOOTSTRAP=${kafka_bootstrap}
+KAFKA_QUEUE_URL=${kafka_queue_url}
+EOF
+
+cat > /etc/systemd/system/shop.service <<'EOF'
+[Unit]
+Description=Boutique en ligne (solution VM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/shop.env
+ExecStart=/opt/shop/venv/bin/python /opt/shop/app.py
+Restart=always
+RestartSec=5
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now shop.service

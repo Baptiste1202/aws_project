@@ -1,0 +1,54 @@
+# Version locale de la boutique (solution VM) : http://localhost:8080
+#   docker compose -f local/docker-compose.yml up --build
+# PostgreSQL remplace RDS, moto simule SNS / SQS / SSM. Aucun appel au vrai AWS.
+
+name: threadly-local
+
+x-aws-env: &aws-env
+  AWS_REGION: eu-west-3
+  AWS_DEFAULT_REGION: eu-west-3
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+  AWS_ENDPOINT_URL: http://aws:5000
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: shop_admin
+      POSTGRES_PASSWORD: local-password
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "shop_admin", "-d", "shop"]
+      interval: 2s
+      retries: 30
+
+  aws:
+    image: motoserver/moto:5.1.22
+
+  # Crée le topic SNS, les files SQS et le mot de passe SSM (équivalent de Terraform).
+  init:
+    build: { context: .., dockerfile: local/Dockerfile }
+    command: ["python", "/opt/shop/init_aws.py"]
+    environment:
+      <<: *aws-env
+      FULFILLMENT_DELAY_SECONDS: "5"
+    depends_on: [aws]
+
+  app:
+    build: { context: .., dockerfile: local/Dockerfile }
+    ports: ["8080:8080"]
+    environment:
+      <<: *aws-env
+      PORT: "8080"
+      STATIC_DIR: /opt/shop/static
+      PRODUCTS_FILE: /opt/shop/products.json
+      DB_HOST: db
+      DB_NAME: shop
+      DB_USER: shop_admin
+      DB_PASSWORD_PARAM: /threadly-local/db/password
+      TOPIC_ARN: arn:aws:sns:eu-west-3:123456789012:threadly-order-events
+      QUEUE_URL: http://aws:5000/123456789012/threadly-vm-processing
+    depends_on:
+      db: { condition: service_healthy }
+      init: { condition: service_completed_successfully }

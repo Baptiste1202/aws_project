@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threadly — Vêtements</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◐</span>
+      <span>Threadly</span>
+      <span id="backend" class="badge" title="Solution qui sert cette page">…</span>
+    </div>
+    <button id="cart-button" class="cart-button" aria-label="Ouvrir le panier">
+      Panier <span id="cart-count" class="count">0</span>
+    </button>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>La garde-robe essentielle</h1>
+      <p>T-shirts, pulls et baskets — livrés depuis Paris.</p>
+    </section>
+
+    <nav class="filters" id="filters">
+      <button data-category="" class="active">Tout</button>
+      <button data-category="tshirt">T-shirts</button>
+      <button data-category="pull">Pulls</button>
+      <button data-category="baskets">Baskets</button>
+    </nav>
+
+    <p id="catalog-error" class="error" hidden></p>
+    <section id="catalog" class="grid" aria-live="polite"></section>
+
+    <section id="stats" class="stats" hidden>
+      <h2>Flux Kafka en direct</h2>
+      <div class="stats-row">
+        <div><span id="stat-orders">0</span><small>commandes</small></div>
+        <div><span id="stat-shipped">0</span><small>expédiées</small></div>
+        <div><span id="stat-revenue">0 €</span><small>chiffre d'affaires</small></div>
+      </div>
+      <ul id="stat-recent"></ul>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Votre panier</h2>
+      <button id="drawer-close" class="icon" aria-label="Fermer">✕</button>
+    </div>
+    <ul id="cart-lines" class="cart-lines"></ul>
+    <p id="cart-empty" class="muted">Votre panier est vide.</p>
+    <div class="cart-total">Total <strong id="cart-total">0,00 €</strong></div>
+    <form id="checkout" class="checkout">
+      <label>Nom <input name="name" required maxlength="100" autocomplete="name"></label>
+      <label>E-mail <input name="email" type="email" required autocomplete="email"></label>
+      <button type="submit" class="primary" id="checkout-submit">Commander</button>
+      <p id="checkout-error" class="error" hidden></p>
+    </form>
+  </aside>
+
+  <section id="tracking" class="tracking" hidden>
+    <div class="tracking-card">
+      <button id="tracking-close" class="icon" aria-label="Fermer">✕</button>
+      <h2>Commande <span id="tracking-id"></span></h2>
+      <p class="muted" id="tracking-summary"></p>
+      <ol class="timeline" id="timeline">
+        <li data-status="CONFIRMED"><b>Confirmée</b><span></span></li>
+        <li data-status="PACKED"><b>Emballée</b><span></span></li>
+        <li data-status="SHIPPED"><b>Expédiée</b><span></span></li>
+      </ol>
+      <p id="tracking-shipping" class="shipping" hidden></p>
+    </div>
+  </section>
+
+  <div id="backdrop" class="backdrop" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
