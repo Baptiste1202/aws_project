@@ -1,27 +1,31 @@
 # ---------------------------------------------------------------------------
 # Solution 2 : machines virtuelles.
 #   CloudFront -> ALB (2 AZ) -> Auto Scaling Group EC2 (2 AZ) -> RDS PostgreSQL
+# Solution 3 (hybride) : mêmes ALB, EC2 et instance RDS. Un 2e service (port 8081,
+# base shop_hybrid) reçoit POST /api/orders, routé par l'en-tête X-Shop: hybrid.
 # Les EC2 sont dans des sous-réseaux publics (pas de NAT Gateway payante) mais
 # n'acceptent que le trafic de l'ALB ; l'ALB n'accepte que CloudFront.
 # Accès shell : AWS Systems Manager Session Manager (aucun port SSH ouvert).
 # ---------------------------------------------------------------------------
 
 data "aws_ec2_managed_prefix_list" "cloudfront" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "com.amazonaws.global.cloudfront.origin-facing"
 }
 
 locals {
   vm_arch = can(regex("^[a-z]+[0-9]+g", var.vm_instance_type)) ? "arm64" : "x86_64"
+  # Files lues par les workers EC2 (aucune si seule la solution hybride est déployée).
+  ec2_queue_arns = [for k in ["vm-processing", "kafka-bridge"] : aws_sqs_queue.main[k].arn if contains(keys(local.queues), k)]
 }
 
 data "aws_ssm_parameter" "al2023" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-${local.vm_arch}"
 }
 
 resource "aws_security_group" "alb" {
-  count       = var.deploy_vm ? 1 : 0
+  count       = local.ec2_enabled ? 1 : 0
   name        = "${local.name}-alb"
   description = "ALB : HTTP depuis CloudFront uniquement"
   vpc_id      = aws_vpc.main.id
@@ -43,15 +47,15 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "app" {
-  count       = var.deploy_vm ? 1 : 0
+  count       = local.ec2_enabled ? 1 : 0
   name        = "${local.name}-app"
-  description = "Instances applicatives : port 8080 depuis le load balancer uniquement"
+  description = "Instances applicatives : ports 8080-8081 depuis le load balancer uniquement"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Application depuis le load balancer"
+    description     = "Applications (VM 8080, hybride 8081) depuis le load balancer"
     from_port       = 8080
-    to_port         = 8080
+    to_port         = 8081
     protocol        = "tcp"
     security_groups = [aws_security_group.alb[0].id]
   }
@@ -66,7 +70,7 @@ resource "aws_security_group" "app" {
 }
 
 resource "aws_lb" "app" {
-  count              = var.deploy_vm ? 1 : 0
+  count              = local.ec2_enabled ? 1 : 0
   name               = "${local.name}-alb"
   load_balancer_type = "application"
   internal           = false
@@ -93,7 +97,7 @@ resource "aws_lb_target_group" "app" {
 }
 
 resource "aws_lb_listener" "http" {
-  count             = var.deploy_vm ? 1 : 0
+  count             = local.ec2_enabled ? 1 : 0
   load_balancer_arn = aws_lb.app[0].arn
   port              = 80
   protocol          = "HTTP"
@@ -111,7 +115,7 @@ resource "aws_lb_listener" "http" {
 resource "aws_lb_listener_rule" "from_cloudfront" {
   count        = var.deploy_vm ? 1 : 0
   listener_arn = aws_lb_listener.http[0].arn
-  priority     = 1
+  priority     = 10
 
   condition {
     http_header {
@@ -126,12 +130,56 @@ resource "aws_lb_listener_rule" "from_cloudfront" {
   }
 }
 
+# Solution hybride : évaluée avant la règle VM, elle exige l'en-tête secret ET
+# X-Shop: hybrid (ajoutés par la distribution CloudFront hybride).
+resource "aws_lb_target_group" "hybrid" {
+  count                = var.deploy_hybrid ? 1 : 0
+  name                 = "${local.name}-hybrid"
+  port                 = 8081
+  protocol             = "HTTP"
+  vpc_id               = aws_vpc.main.id
+  deregistration_delay = 10
+
+  health_check {
+    path                = "/api/health"
+    matcher             = "200"
+    interval            = 15
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+}
+
+resource "aws_lb_listener_rule" "hybrid" {
+  count        = var.deploy_hybrid ? 1 : 0
+  listener_arn = aws_lb_listener.http[0].arn
+  priority     = 5
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [random_password.origin_secret.result]
+    }
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Shop"
+      values           = ["hybrid"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.hybrid[0].arn
+  }
+}
+
 # ---------------------------------------------------------------------------
 # IAM des instances
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "app" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "${local.name}-ec2-app"
 
   assume_role_policy = jsonencode({
@@ -145,13 +193,13 @@ resource "aws_iam_role" "app" {
 }
 
 resource "aws_iam_role_policy_attachment" "app_ssm" {
-  count      = var.deploy_vm ? 1 : 0
+  count      = local.ec2_enabled ? 1 : 0
   role       = aws_iam_role.app[0].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_role_policy" "app" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "app"
   role  = aws_iam_role.app[0].id
 
@@ -172,19 +220,19 @@ resource "aws_iam_role_policy" "app" {
         },
         { Effect = "Allow", Action = ["ssm:GetParameter"], Resource = [aws_ssm_parameter.db_password[0].arn] },
         { Effect = "Allow", Action = ["sns:Publish"], Resource = [aws_sns_topic.orders.arn] },
-        {
-          Effect   = "Allow"
-          Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
-          Resource = [for k in ["vm-processing", "kafka-bridge"] : aws_sqs_queue.main[k].arn if contains(keys(local.queues), k)]
-        },
       ],
+      length(local.ec2_queue_arns) > 0 ? [{
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
+        Resource = local.ec2_queue_arns
+      }] : [],
       local.kms_statements,
     )
   })
 }
 
 resource "aws_iam_instance_profile" "app" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "${local.name}-ec2-app"
   role  = aws_iam_role.app[0].name
 }
@@ -194,7 +242,7 @@ resource "aws_iam_instance_profile" "app" {
 # ---------------------------------------------------------------------------
 
 resource "aws_launch_template" "app" {
-  count                  = var.deploy_vm ? 1 : 0
+  count                  = local.ec2_enabled ? 1 : 0
   name_prefix            = "${local.name}-app-"
   image_id               = data.aws_ssm_parameter.al2023[0].insecure_value
   instance_type          = var.vm_instance_type
@@ -215,11 +263,10 @@ resource "aws_launch_template" "app" {
     bucket            = aws_s3_bucket.web.id
     app_version       = md5(join("-", [for o in concat(values(aws_s3_object.vm_app), aws_s3_object.vm_products, values(aws_s3_object.frontend)) : o.etag]))
     db_host           = aws_db_instance.main[0].address
-    db_name           = aws_db_instance.main[0].db_name
     db_user           = aws_db_instance.main[0].username
     db_password_param = aws_ssm_parameter.db_password[0].name
     topic_arn         = aws_sns_topic.orders.arn
-    queue_url         = aws_sqs_queue.main["vm-processing"].url
+    services          = local.ec2_services
     kafka_bootstrap   = var.enable_msk ? aws_msk_cluster.main[0].bootstrap_brokers : ""
     kafka_queue_url   = var.enable_msk ? aws_sqs_queue.main["kafka-bridge"].url : ""
   }))
@@ -234,12 +281,12 @@ resource "aws_launch_template" "app" {
 }
 
 resource "aws_autoscaling_group" "app" {
-  count                     = var.deploy_vm ? 1 : 0
+  count                     = local.ec2_enabled ? 1 : 0
   name                      = "${local.name}-app"
   min_size                  = var.vm_min_size
   max_size                  = var.vm_max_size
   vpc_zone_identifier       = aws_subnet.public[*].id
-  target_group_arns         = [aws_lb_target_group.app[0].arn]
+  target_group_arns         = concat(aws_lb_target_group.app[*].arn, aws_lb_target_group.hybrid[*].arn)
   health_check_type         = "ELB"
   health_check_grace_period = 240
 
@@ -264,7 +311,7 @@ resource "aws_autoscaling_group" "app" {
 }
 
 resource "aws_autoscaling_policy" "cpu" {
-  count                  = var.deploy_vm ? 1 : 0
+  count                  = local.ec2_enabled ? 1 : 0
   name                   = "cpu-target-60"
   autoscaling_group_name = aws_autoscaling_group.app[0].name
   policy_type            = "TargetTrackingScaling"

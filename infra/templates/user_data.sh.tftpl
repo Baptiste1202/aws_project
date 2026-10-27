@@ -1,5 +1,6 @@
 #!/bin/bash
 # Démarrage d'une instance applicative (Amazon Linux 2023).
+# Un service systemd par solution : shop (VM, port 8080) et/ou shop-hybrid (port 8081).
 # Version applicative : ${app_version}
 set -euxo pipefail
 
@@ -14,30 +15,34 @@ python3 -m venv /opt/shop/venv
 
 aws s3 cp "s3://${bucket}/vm-app/" /opt/shop/ --recursive --region ${region}
 aws s3 cp "s3://${bucket}/web/" /opt/shop/static/ --recursive --region ${region}
+%{ for s in services ~}
 
-cat > /etc/shop.env <<'EOF'
+cat > /etc/${s.unit}.env <<'EOF'
 AWS_REGION=${region}
-PORT=8080
+SHOP_SOURCE=${s.source}
+PORT=${s.port}
 STATIC_DIR=/opt/shop/static
 PRODUCTS_FILE=/opt/shop/products.json
 DB_HOST=${db_host}
-DB_NAME=${db_name}
+DB_NAME=${s.db_name}
 DB_USER=${db_user}
 DB_PASSWORD_PARAM=${db_password_param}
 TOPIC_ARN=${topic_arn}
-QUEUE_URL=${queue_url}
+QUEUE_URL=${s.queue_url}
+%{ if s.source == "vm" ~}
 KAFKA_BOOTSTRAP=${kafka_bootstrap}
 KAFKA_QUEUE_URL=${kafka_queue_url}
+%{ endif ~}
 EOF
 
-cat > /etc/systemd/system/shop.service <<'EOF'
+cat > /etc/systemd/system/${s.unit}.service <<'EOF'
 [Unit]
-Description=Boutique en ligne (solution VM)
+Description=Boutique en ligne (solution ${s.source})
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=/etc/shop.env
+EnvironmentFile=/etc/${s.unit}.env
 ExecStart=/opt/shop/venv/bin/python /opt/shop/app.py
 Restart=always
 RestartSec=5
@@ -46,6 +51,9 @@ DynamicUser=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+%{ endfor ~}
 
 systemctl daemon-reload
-systemctl enable --now shop.service
+%{ for s in services ~}
+systemctl enable --now ${s.unit}.service
+%{ endfor ~}

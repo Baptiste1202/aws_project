@@ -12,6 +12,11 @@ output "vm_url" {
   ) : null
 }
 
+output "hybrid_url" {
+  description = "Boutique - solution hybride (S3 + Lambda/DynamoDB en lecture, EC2/RDS pour les commandes)."
+  value       = var.deploy_hybrid ? "https://${aws_cloudfront_distribution.hybrid[0].domain_name}" : null
+}
+
 output "dashboard_url" {
   description = "Tableau de bord CloudWatch."
   value       = "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}#dashboards/dashboard/${aws_cloudwatch_dashboard.main.dashboard_name}"

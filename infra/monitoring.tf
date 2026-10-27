@@ -91,11 +91,11 @@ resource "aws_cloudwatch_dashboard" "main" {
           }
         },
       ],
-      var.deploy_vm ? [
+      local.ec2_enabled ? [
         {
           type = "metric", x = 12, y = 6, width = 12, height = 6
           properties = {
-            title  = "Solution VM : requêtes ALB / CPU EC2 / CPU RDS"
+            title  = "EC2 + RDS (VM, hybride) : requêtes ALB / CPU EC2 / CPU RDS"
             region = var.region
             period = 60
             metrics = [

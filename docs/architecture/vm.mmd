@@ -1,0 +1,32 @@
+flowchart TB
+  user([Navigateur]) -- HTTPS --> cf[CloudFront]
+  subgraph region["Région eu-west-3 (Paris)"]
+    subgraph vpc["VPC 10.20.0.0/16"]
+      subgraph pub["Sous-réseaux publics (2 AZ)"]
+        alb[ALB<br/>prefix list CloudFront<br/>+ X-Origin-Verify]
+        subgraph asg["Auto Scaling Group 1–2 × t3.micro (CPU 60 %)"]
+          ec2a[EC2 AZ a<br/>site + API + worker SQS]
+          ec2b[EC2 AZ b]
+        end
+      end
+      subgraph priv["Sous-réseaux privés (2 AZ)"]
+        rds[(RDS PostgreSQL 16<br/>db.t3.micro)]
+      end
+    end
+    ssm[SSM Parameter Store<br/>mot de passe BDD]
+    sns{{SNS order-events}}
+    q1[SQS vm-processing<br/>délai 5 s + DLQ]
+    q2[SQS audit + DLQ]
+    aud[Lambda audit]
+    s3audit[(S3 audit)]
+    msk[[MSK Kafka<br/>option, désactivé]]
+  end
+  mail([E-mail de notification<br/>abonnement SNS])
+  cf --> alb --> ec2a & ec2b
+  ec2a & ec2b -- "SELECT … FOR UPDATE" --> rds
+  ec2a -. lecture .-> ssm
+  ec2a -- ORDER_CREATED --> sns
+  sns -- "filtre source=vm" --> q1 -- long polling --> ec2a
+  sns --> q2 --> aud --> s3audit
+  sns --> mail
+  sns -. "kafka-bridge (option)" .-> msk

@@ -1,0 +1,58 @@
+
+━━ Boutique : https://d1khse8j7qh4cj.cloudfront.net (mode aws)
+   Backend : hybrid (eu-west-3)
+
+━━ 1. Afficher le catalogue
+   BK-001  baskets  Baskets Court Classic            119 €  stock  50
+   BK-002  baskets  Baskets Runner Rétro              99 €  stock  35
+   BK-003  baskets  Baskets Montantes Urban           89 €  stock  30
+   BK-004  baskets  Baskets Trail Graphite           129 €  stock  22
+   PU-001  pull     Pull Col Rond Mérinos             79 €  stock  40
+   PU-002  pull     Pull Camionneur                   89 €  stock  25
+   PU-003  pull     Sweat à capuche Atelier           59 €  stock  70
+   PU-004  pull     Cardigan Torsadé                  95 €  stock   0
+   TS-001  tshirt   T-shirt Essentiel               19.9 €  stock 118
+   TS-002  tshirt   T-shirt Oversize Nuit           29.9 €  stock  79
+   TS-003  tshirt   T-shirt Marinière               34.9 €  stock  31
+   TS-004  tshirt   T-shirt Terracotta              24.9 €  stock  59
+   ✅ 12 produits renvoyés par GET /api/products
+
+━━ 2. Commande de plusieurs produits, suivie jusqu'à SHIPPED
+   Commande : 2 × TS-001 (taille XS) + 1 × TS-002 (taille S)
+   ORD-708B8793A9 créée : CONFIRMED, total 69.7 €
+   +7 s : PACKED
+   +11 s : SHIPPED
+   Expédiée : Chronopost FRFAF80A52DAE5
+   Stock : TS-001 118 → 116, TS-002 79 → 78
+   ✅ CONFIRMED → PACKED → SHIPPED en 12 s, stock décrémenté
+
+━━ 3. Commande refusée pour stock insuffisant (409)
+   Demande de 23 × BK-004 alors que le stock est de 22
+   Réponse : Stock insuffisant pour : BK-004
+   ✅ 409 renvoyé, stock de BK-004 inchangé (22)
+
+━━ 4. Commandes simultanées : le stock ne devient jamais négatif
+   16 commandes simultanées de 2 × BK-004 (stock 22, demande totale 32)
+   Acceptées (201) : 11, refusées (409) : 5, limitées par Lambda (429) : 0, autres : 0
+   Stock final : 0 (attendu 22 - 11 × 2 = 0)
+   ✅ 11/16 acceptées, stock final 0 ≥ 0 et cohérent
+
+━━ 5. Fichiers d'audit dans S3 (AWS uniquement)
+   Derniers fichiers de s3://threadly-dev-audit-bdf555/events/ :
+     2026-10-27 14:34:58        663 events/event_type=ORDER_PACKED/date=2026-10-27/c756a0e9-a4b3-429f-9d79-060d4b0f436f.json
+     2026-10-27 14:34:58        663 events/event_type=ORDER_PACKED/date=2026-10-27/c8f6bb69-926f-4257-91b9-43f029f45a02.json
+     2026-10-27 14:34:58        663 events/event_type=ORDER_PACKED/date=2026-10-27/f28c5f5b-eeab-44fc-ae74-fff697f1d087.json
+     2026-10-27 14:34:58        663 events/event_type=ORDER_PACKED/date=2026-10-27/fa63d05b-f5cf-418f-bd2a-37f915254352.json
+     2026-10-27 14:34:59        653 events/event_type=ORDER_PACKED/date=2026-10-27/4391e32c-5a06-452b-83ae-6da33ebe246c.json
+     2026-10-27 14:34:59        653 events/event_type=ORDER_PACKED/date=2026-10-27/6c8c85f2-2690-46ec-9cdd-ec74933d551d.json
+   ✅ les 3 événements de ORD-708B8793A9 sont archivés (ORDER_CREATED ORDER_PACKED ORDER_SHIPPED )
+
+━━ Résumé
+   ✅ Catalogue
+   ✅ Commande jusqu'à SHIPPED
+   ✅ Stock insuffisant
+   ✅ Commandes simultanées
+   ✅ Audit S3
+
+   Tous les scénarios exécutés sont passés.
+code de sortie : 0

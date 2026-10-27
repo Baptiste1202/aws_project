@@ -1,15 +1,33 @@
-# Version locale de la boutique (solution VM) : http://localhost:8080
+# Version locale des trois solutions, sans compte AWS :
 #   docker compose -f local/docker-compose.yml up --build
-# PostgreSQL remplace RDS, moto simule SNS / SQS / SSM. Aucun appel au vrai AWS.
+#   http://localhost:8080  solution VM          (app.py, comme sur EC2)
+#   http://localhost:8081  solution serverless  (nginx = CloudFront, Lambda + DynamoDB)
+#   http://localhost:8082  solution hybride     (nginx = CloudFront, Lambda + DynamoDB, EC2 + PostgreSQL)
+# PostgreSQL remplace RDS ; LocalStack (édition communautaire, gratuite) simule Lambda,
+# DynamoDB, SNS, SQS, S3 et SSM. Aucun appel au vrai AWS.
+#
+# LocalStack est épinglé sur 4.14.0, la dernière version communautaire qui démarre sans
+# jeton. Les versions plus récentes exigent un compte LocalStack (gratuit) :
+#   LOCALSTACK_VERSION=2026.10.3 LOCALSTACK_AUTH_TOKEN=... docker compose -f local/docker-compose.yml up --build
 
 name: threadly-local
 
 x-aws-env: &aws-env
   AWS_REGION: eu-west-3
   AWS_DEFAULT_REGION: eu-west-3
-  AWS_ACCESS_KEY_ID: local
-  AWS_SECRET_ACCESS_KEY: local
-  AWS_ENDPOINT_URL: http://aws:5000
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_ENDPOINT_URL: http://localstack:4566
+
+# Variables communes aux services "EC2" (app.py).
+x-app-env: &app-env
+  <<: *aws-env
+  STATIC_DIR: /opt/shop/static
+  PRODUCTS_FILE: /opt/shop/products.json
+  DB_HOST: db
+  DB_USER: shop_admin
+  DB_PASSWORD_PARAM: /threadly-local/db/password
+  TOPIC_ARN: arn:aws:sns:eu-west-3:000000000000:threadly-order-events
 
 services:
   db:
@@ -23,32 +41,82 @@ services:
       interval: 2s
       retries: 30
 
-  aws:
-    image: motoserver/moto:5.1.22
+  localstack:
+    image: localstack/localstack:${LOCALSTACK_VERSION:-4.14.0}
+    ports: ["4566:4566"] # pour lire le bucket d'audit depuis la machine (scénario 5)
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      SERVICES: lambda,dynamodb,sns,sqs,s3,ssm,sts,iam,logs
+      # Les Lambdas tournent dans des conteneurs lancés par LocalStack, sur ce réseau.
+      LAMBDA_DOCKER_NETWORK: threadly-local_default
+      # URL de file indépendantes du nom d'hôte : http://localstack:4566/000000000000/<file>
+      SQS_ENDPOINT_STRATEGY: "off"
+      # Même quota que le compte AWS (10 exécutions simultanées) : au-delà, 429, comme sur
+      # AWS. Sans limite, une rafale lance des dizaines de conteneurs Lambda à la fois et
+      # leurs démarrages à froid dépassent le délai de LocalStack (erreurs 500).
+      LAMBDA_LIMITS_CONCURRENT_EXECUTIONS: "10"
+      LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT: "60"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # À l'arrêt, LocalStack supprime les conteneurs Lambda qu'il a lancés : il lui faut
+    # plus que les 10 s par défaut, sinon ils restent (et le réseau avec eux).
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 2s
+      retries: 60
 
-  # Crée le topic SNS, les files SQS et le mot de passe SSM (équivalent de Terraform).
+  # Équivalent de Terraform : files, topic, tables, bucket, Lambdas (voir init_aws.py).
   init:
     build: { context: .., dockerfile: local/Dockerfile }
     command: ["python", "/opt/shop/init_aws.py"]
     environment:
       <<: *aws-env
       FULFILLMENT_DELAY_SECONDS: "5"
-    depends_on: [aws]
+      ORIGIN_SECRET: local-origin-secret
+    volumes:
+      - nginx-generated:/etc/nginx/generated
+    depends_on:
+      localstack: { condition: service_healthy }
 
+  # Solution VM (EC2) : site + API + worker SQS, base "shop".
   app:
     build: { context: .., dockerfile: local/Dockerfile }
     ports: ["8080:8080"]
     environment:
-      <<: *aws-env
+      <<: *app-env
+      SHOP_SOURCE: vm
       PORT: "8080"
-      STATIC_DIR: /opt/shop/static
-      PRODUCTS_FILE: /opt/shop/products.json
-      DB_HOST: db
       DB_NAME: shop
-      DB_USER: shop_admin
-      DB_PASSWORD_PARAM: /threadly-local/db/password
-      TOPIC_ARN: arn:aws:sns:eu-west-3:123456789012:threadly-order-events
-      QUEUE_URL: http://aws:5000/123456789012/threadly-vm-processing
+      QUEUE_URL: http://localstack:4566/000000000000/threadly-vm-processing
     depends_on:
       db: { condition: service_healthy }
       init: { condition: service_completed_successfully }
+
+  # Solution hybride, partie EC2 : création des commandes, base "shop_hybrid".
+  app-hybrid:
+    build: { context: .., dockerfile: local/Dockerfile }
+    environment:
+      <<: *app-env
+      SHOP_SOURCE: hybrid
+      PORT: "8081"
+      DB_NAME: shop_hybrid
+      QUEUE_URL: ""
+    depends_on:
+      db: { condition: service_healthy }
+      init: { condition: service_completed_successfully }
+
+  # CloudFront local : solutions serverless (8081) et hybride (8082), voir nginx.conf.
+  proxy:
+    image: nginx:1.27.5-alpine
+    ports: ["8081:8081", "8082:8082"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../src/frontend:/usr/share/nginx/html:ro
+      - nginx-generated:/etc/nginx/generated:ro
+    depends_on:
+      init: { condition: service_completed_successfully }
+      app-hybrid: { condition: service_started }
+
+volumes:
+  nginx-generated:

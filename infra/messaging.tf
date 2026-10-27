@@ -5,6 +5,8 @@
 #        |-- e-mail (confirmation / expédition)          [filtre event_type]
 #        |-- SQS processing     -> Lambda processor       [source = serverless]
 #        |-- SQS vm-processing  -> worker sur EC2         [source = vm]
+#        |-- SQS hybrid-projection -> Lambda projector -> DynamoDB  [source = hybrid, ORDER_CREATED]
+#        |-- SQS hybrid-processing -> Lambda processor (hybride)    [source = hybrid]
 #        |-- SQS audit          -> Lambda audit -> S3     [tous les événements]
 #        '-- SQS kafka-bridge   -> EC2 -> MSK (Kafka)     [si enable_msk]
 #
@@ -40,6 +42,17 @@ locals {
       vm-processing = {
         delay  = var.fulfillment_delay_seconds
         filter = jsonencode({ source = ["vm"], event_type = ["ORDER_CREATED", "ORDER_PACKED"] })
+      }
+    } : {},
+    var.deploy_hybrid ? {
+      # Sans délai : le catalogue et le suivi DynamoDB doivent rattraper RDS au plus vite.
+      hybrid-projection = {
+        delay  = 0
+        filter = jsonencode({ source = ["hybrid"], event_type = ["ORDER_CREATED"] })
+      }
+      hybrid-processing = {
+        delay  = var.fulfillment_delay_seconds
+        filter = jsonencode({ source = ["hybrid"], event_type = ["ORDER_CREATED", "ORDER_PACKED"] })
       }
     } : {},
     {

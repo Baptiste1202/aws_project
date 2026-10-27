@@ -33,6 +33,29 @@ locals {
 
   kms_key_arn = var.enable_kms_cmk ? aws_kms_key.main[0].arn : null
 
+  # Réseau, ALB, EC2 et RDS servent à la solution VM et à la solution hybride.
+  ec2_enabled = var.deploy_vm || var.deploy_hybrid
+  # Le bucket web (OAC) sert les solutions serverless et hybride.
+  s3_front_enabled = var.deploy_serverless || var.deploy_hybrid
+
+  # Services lancés sur chaque EC2 : un par solution (même app.py, autre base et port).
+  ec2_services = concat(
+    var.deploy_vm ? [{
+      unit      = "shop"
+      source    = "vm"
+      port      = 8080
+      db_name   = "shop"
+      queue_url = aws_sqs_queue.main["vm-processing"].url
+    }] : [],
+    var.deploy_hybrid ? [{
+      unit      = "shop-hybrid"
+      source    = "hybrid"
+      port      = 8081
+      db_name   = "shop_hybrid"
+      queue_url = ""
+    }] : [],
+  )
+
   # Politique IAM réutilisable pour utiliser la clé KMS du projet (si activée).
   kms_statements = var.enable_kms_cmk ? [{
     Effect   = "Allow"

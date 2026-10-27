@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # Bucket "web" (privé) :
-#   web/     -> site statique servi par CloudFront (solution serverless)
+#   web/     -> site statique servi par CloudFront (solutions serverless et hybride)
 #   vm-app/  -> code de l'application + front, téléchargés par les EC2 au boot
 # ---------------------------------------------------------------------------
 
@@ -18,7 +18,7 @@ resource "aws_s3_bucket_public_access_block" "web" {
 }
 
 resource "aws_s3_bucket_policy" "web" {
-  count  = var.deploy_serverless ? 1 : 0
+  count  = local.s3_front_enabled ? 1 : 0
   bucket = aws_s3_bucket.web.id
 
   policy = jsonencode({
@@ -30,7 +30,9 @@ resource "aws_s3_bucket_policy" "web" {
       Action    = "s3:GetObject"
       Resource  = "${aws_s3_bucket.web.arn}/web/*"
       Condition = {
-        StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.serverless[0].arn }
+        StringEquals = {
+          "AWS:SourceArn" = concat(aws_cloudfront_distribution.serverless[*].arn, aws_cloudfront_distribution.hybrid[*].arn)
+        }
       }
     }]
   })
@@ -48,7 +50,7 @@ resource "aws_s3_object" "frontend" {
 }
 
 resource "aws_s3_object" "vm_app" {
-  for_each = var.deploy_vm ? toset(["app.py"]) : toset([])
+  for_each = local.ec2_enabled ? toset(["app.py"]) : toset([])
   bucket   = aws_s3_bucket.web.id
   key      = "vm-app/${each.value}"
   source   = "${local.src_dir}/vm/${each.value}"
@@ -56,7 +58,7 @@ resource "aws_s3_object" "vm_app" {
 }
 
 resource "aws_s3_object" "vm_products" {
-  count  = var.deploy_vm ? 1 : 0
+  count  = local.ec2_enabled ? 1 : 0
   bucket = aws_s3_bucket.web.id
   key    = "vm-app/products.json"
   source = "${local.root_dir}/data/products.json"

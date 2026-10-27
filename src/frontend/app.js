@@ -173,7 +173,12 @@ function showTracking(order) {
   clearTimeout(pollTimer);
   if (order.status !== "SHIPPED") {
     pollTimer = setTimeout(async () => {
-      try { showTracking(await api(`/orders/${order.order_id}`)); } catch { /* nouvel essai au prochain tour */ }
+      // En cas d'erreur (réseau, ou 404 juste après la création en solution hybride, le
+      // temps que la commande arrive dans DynamoDB), on garde le dernier état affiché
+      // (d'abord la réponse du POST) et on réessaie au tour suivant.
+      let next = order;
+      try { next = await api(`/orders/${order.order_id}`); } catch { /* nouvel essai dans 2 s */ }
+      showTracking(next);
     }, 2000);
   }
 }

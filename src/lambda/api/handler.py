@@ -1,4 +1,9 @@
-"""API de la boutique (solution serverless), exposée via une Lambda Function URL derrière CloudFront.
+"""API de la boutique, exposée via une Lambda Function URL derrière CloudFront.
+
+- Solution serverless : toutes les routes.
+- Solution hybride (READ_ONLY=1, BACKEND=hybrid) : lectures seulement (catalogue,
+  suivi). Les commandes sont créées par l'EC2 hybride, les tables sont des
+  projections mises à jour par les événements.
 
 Routes :
   GET  /api/health
@@ -26,8 +31,10 @@ sns = boto3.client("sns")
 
 PRODUCTS_TABLE = os.environ["PRODUCTS_TABLE"]
 ORDERS_TABLE = os.environ["ORDERS_TABLE"]
-TOPIC_ARN = os.environ["TOPIC_ARN"]
+TOPIC_ARN = os.environ.get("TOPIC_ARN", "")
 ORIGIN_SECRET = os.environ["ORIGIN_SECRET"]
+BACKEND = os.environ.get("BACKEND", "serverless")
+READ_ONLY = os.environ.get("READ_ONLY") == "1"
 
 products_table = dynamodb.Table(PRODUCTS_TABLE)
 orders_table = dynamodb.Table(ORDERS_TABLE)
@@ -233,12 +240,12 @@ def handler(event, context):
 
     try:
         if method == "GET" and path == "/api/health":
-            return response(200, {"status": "ok", "backend": "serverless", "region": os.environ["AWS_REGION"]})
+            return response(200, {"status": "ok", "backend": BACKEND, "region": os.environ["AWS_REGION"]})
         if method == "GET" and path == "/api/products":
             return response(200, {"products": list_products(params)})
         if method == "GET" and path.startswith("/api/products/"):
             return response(200, get_product(path.split("/")[-1]))
-        if method == "POST" and path == "/api/orders":
+        if method == "POST" and path == "/api/orders" and not READ_ONLY:
             body = event.get("body") or ""
             if event.get("isBase64Encoded"):
                 body = base64.b64decode(body).decode("utf-8")

@@ -62,11 +62,82 @@ resource "aws_dynamodb_table_item" "products" {
 }
 
 # ---------------------------------------------------------------------------
-# RDS PostgreSQL (solution VM) : Single-AZ, db.t3.micro, 20 Go => Free Tier.
+# DynamoDB (solution hybride) : modèle de lecture (CQRS). RDS fait foi pour le
+# stock et la création des commandes ; ces tables sont mises à jour par les
+# événements (Lambda projector) et lues par la Lambda hybrid-read. Le statut
+# des commandes, lui, est géré ici par la Lambda hybrid-processor.
+# Avec les 3 solutions : 20 RCU / 14 WCU sur les 25 gratuites.
+# ---------------------------------------------------------------------------
+
+resource "aws_dynamodb_table" "hybrid_products" {
+  count          = var.deploy_hybrid ? 1 : 0
+  name           = "${local.name}-hybrid-products"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 5
+  write_capacity = 2
+  hash_key       = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = var.enable_kms_cmk
+    kms_key_arn = local.kms_key_arn
+  }
+}
+
+resource "aws_dynamodb_table" "hybrid_orders" {
+  count          = var.deploy_hybrid ? 1 : 0
+  name           = "${local.name}-hybrid-orders"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 5
+  write_capacity = 5
+  hash_key       = "order_id"
+
+  attribute {
+    name = "order_id"
+    type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = var.enable_kms_cmk
+    kms_key_arn = local.kms_key_arn
+  }
+}
+
+# Même catalogue initial que la base shop_hybrid (chargée par l'EC2 au démarrage).
+# ignore_changes : le stock est ensuite piloté par la projection, un nouvel apply
+# ne doit pas le remettre à zéro sans RDS (les deux divergeraient).
+resource "aws_dynamodb_table_item" "hybrid_products" {
+  for_each   = var.deploy_hybrid ? { for p in local.products : p.id => p } : {}
+  table_name = aws_dynamodb_table.hybrid_products[0].name
+  hash_key   = aws_dynamodb_table.hybrid_products[0].hash_key
+
+  item = jsonencode({
+    id          = { S = each.value.id }
+    category    = { S = each.value.category }
+    name        = { S = each.value.name }
+    description = { S = each.value.description }
+    price       = { N = tostring(each.value.price) }
+    color       = { S = each.value.color }
+    hex         = { S = each.value.hex }
+    sizes       = { L = [for s in each.value.sizes : { S = s }] }
+    stock       = { N = tostring(each.value.stock) }
+  })
+
+  lifecycle {
+    ignore_changes = [item]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# RDS PostgreSQL (solutions VM et hybride, une base chacune) : Single-AZ, db.t3.micro, 20 Go.
 # ---------------------------------------------------------------------------
 
 resource "random_password" "db" {
-  count   = var.deploy_vm ? 1 : 0
+  count   = local.ec2_enabled ? 1 : 0
   length  = 24
   special = false
 }
@@ -74,20 +145,20 @@ resource "random_password" "db" {
 # Mot de passe stocké dans SSM Parameter Store (gratuit, chiffré par aws/ssm),
 # lu par les instances EC2 au démarrage : rien de sensible dans le user-data.
 resource "aws_ssm_parameter" "db_password" {
-  count = var.deploy_vm ? 1 : 0
+  count = local.ec2_enabled ? 1 : 0
   name  = "/${local.name}/db/password"
   type  = "SecureString"
   value = random_password.db[0].result
 }
 
 resource "aws_db_subnet_group" "main" {
-  count      = var.deploy_vm ? 1 : 0
+  count      = local.ec2_enabled ? 1 : 0
   name       = "${local.name}-db"
   subnet_ids = aws_subnet.private[*].id
 }
 
 resource "aws_security_group" "db" {
-  count       = var.deploy_vm ? 1 : 0
+  count       = local.ec2_enabled ? 1 : 0
   name        = "${local.name}-db"
   description = "PostgreSQL, accessible uniquement depuis les instances applicatives"
   vpc_id      = aws_vpc.main.id
@@ -102,7 +173,7 @@ resource "aws_security_group" "db" {
 }
 
 resource "aws_db_instance" "main" {
-  count                  = var.deploy_vm ? 1 : 0
+  count                  = local.ec2_enabled ? 1 : 0
   identifier             = "${local.name}-db"
   engine                 = "postgres"
   engine_version         = "16"

@@ -1,0 +1,28 @@
+flowchart TB
+  user([Navigateur]) -- HTTPS --> cf[CloudFront hybride<br/>routage par chemin]
+  subgraph region["Région eu-west-3 (Paris)"]
+    s3web[(S3 web<br/>site statique, OAC)]
+    read[Lambda hybrid-read<br/>lecture seule]
+    subgraph vpc["VPC : réutilisé de la solution VM"]
+      alb[ALB<br/>règle X-Origin-Verify<br/>+ X-Shop: hybrid]
+      ec2[EC2 ASG<br/>service shop-hybrid :8081]
+      rds[(RDS PostgreSQL<br/>base shop_hybrid<br/>fait foi : stock + création)]
+    end
+    ddb[(DynamoDB hybrid-*<br/>catalogue projeté<br/>fait foi : statut commande)]
+    sns{{SNS order-events<br/>source = hybrid}}
+    qproj[SQS hybrid-projection]
+    qproc[SQS hybrid-processing<br/>délai 5 s]
+    proj[Lambda hybrid-projector]
+    proc[Lambda hybrid-processor]
+    qaud[SQS audit] --> aud[Lambda audit] --> s3audit[(S3 audit)]
+  end
+  cf -- "/* (GET)" --> s3web
+  cf -- "/api/products*, /api/orders/{id}" --> read
+  cf -- "POST /api/orders" --> alb --> ec2
+  ec2 -- "transaction SQL<br/>SELECT … FOR UPDATE" --> rds
+  ec2 -- "ORDER_CREATED<br/>+ stock et version" --> sns
+  read -- lit --> ddb
+  sns --> qproj --> proj -- "commande + stock<br/>si version plus récente" --> ddb
+  sns --> qproc --> proc -- "PACKED → SHIPPED" --> ddb
+  proc -- "ORDER_PACKED / SHIPPED" --> sns
+  sns --> qaud

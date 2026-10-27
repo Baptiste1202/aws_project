@@ -37,6 +37,12 @@ variable "deploy_vm" {
   default     = true
 }
 
+variable "deploy_hybrid" {
+  description = "Solution 3 : CloudFront (routage par chemin) + S3, lectures sur Lambda + DynamoDB, commandes sur ALB + EC2 + RDS PostgreSQL."
+  type        = bool
+  default     = true
+}
+
 # ---------------------------------------------------------------------------
 # Options payantes (désactivées par défaut pour rester dans le Free Tier)
 # ---------------------------------------------------------------------------

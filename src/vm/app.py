@@ -1,9 +1,13 @@
-"""Boutique en ligne - solution VM (EC2 + RDS PostgreSQL).
+"""Boutique en ligne - solutions VM et hybride (EC2 + RDS PostgreSQL).
 
-Un seul processus, lancé par systemd sur chaque instance de l'Auto Scaling Group :
-  - serveur HTTP (site statique + API identique à la version serverless) ;
-  - worker SQS "vm-processing" : emballage puis expédition simulés ;
-  - si MSK est activé : pont SQS -> Kafka et consommateur Kafka (stats temps réel).
+Lancé par systemd sur chaque instance de l'Auto Scaling Group, une fois par solution :
+  - SHOP_SOURCE=vm (port 8080) : serveur HTTP (site statique + API identique à la
+    version serverless), worker SQS "vm-processing" (emballage puis expédition
+    simulés) et, si MSK est activé, pont SQS -> Kafka et stats temps réel ;
+  - SHOP_SOURCE=hybrid (port 8081, base shop_hybrid) : seul POST /api/orders lui est
+    envoyé par CloudFront. Pas de worker : le traitement est fait par des Lambdas.
+Chaque ORDER_CREATED porte le stock après la commande (avec sa version), pour la
+projection du catalogue dans DynamoDB (solution hybride).
 """
 
 import json
@@ -23,6 +27,7 @@ from pathlib import Path
 
 import boto3
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
 
@@ -31,7 +36,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 STATIC_DIR = Path(os.environ["STATIC_DIR"]).resolve()
 PRODUCTS_FILE = os.environ["PRODUCTS_FILE"]
 TOPIC_ARN = os.environ["TOPIC_ARN"]
-QUEUE_URL = os.environ["QUEUE_URL"]
+QUEUE_URL = os.environ.get("QUEUE_URL", "")
+SOURCE = os.environ.get("SHOP_SOURCE", "vm")
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "")
 KAFKA_QUEUE_URL = os.environ.get("KAFKA_QUEUE_URL", "")
 KAFKA_TOPIC = "order-events"
@@ -87,7 +93,8 @@ CREATE TABLE IF NOT EXISTS products (
     color       TEXT NOT NULL,
     hex         TEXT NOT NULL,
     sizes       JSONB NOT NULL,
-    stock       INTEGER NOT NULL CHECK (stock >= 0)
+    stock       INTEGER NOT NULL CHECK (stock >= 0),
+    version     BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS orders (
     order_id   TEXT PRIMARY KEY,
@@ -100,9 +107,34 @@ CREATE TABLE IF NOT EXISTS orders (
     history    JSONB NOT NULL,
     shipping   JSONB
 );
+ALTER TABLE products ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
 """
 
+POOL_SIZE = 10
+POOL_WAIT_SECONDS = 10
+
 pool = None
+# psycopg2 lève une erreur quand le pool est vide : ce sémaphore fait attendre
+# la requête qu'une connexion se libère (au plus POOL_WAIT_SECONDS).
+pool_slots = threading.BoundedSemaphore(POOL_SIZE)
+
+
+def create_database(password):
+    """Crée la base DB_NAME si elle n'existe pas (la solution hybride a sa propre base
+    sur la même instance RDS que la solution VM)."""
+    conn = psycopg2.connect(host=os.environ["DB_HOST"], dbname="postgres", user=os.environ["DB_USER"],
+                            password=password, connect_timeout=5)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (os.environ["DB_NAME"],))
+            if not cur.fetchone():
+                cur.execute(f'CREATE DATABASE "{os.environ["DB_NAME"]}"')
+                log(msg="base créée", db=os.environ["DB_NAME"])
+    except psycopg2.errors.DuplicateDatabase:
+        pass  # créée au même moment par une autre instance
+    finally:
+        conn.close()
 
 
 def connect():
@@ -111,10 +143,13 @@ def connect():
     while True:
         try:
             pool = psycopg2.pool.ThreadedConnectionPool(
-                1, 10, host=os.environ["DB_HOST"], dbname=os.environ["DB_NAME"],
+                1, POOL_SIZE, host=os.environ["DB_HOST"], dbname=os.environ["DB_NAME"],
                 user=os.environ["DB_USER"], password=password, connect_timeout=5)
             break
         except psycopg2.OperationalError as e:
+            if "does not exist" in str(e):
+                create_database(password)
+                continue
             log(msg="base indisponible, nouvel essai dans 5 s", error=str(e))
             time.sleep(5)
 
@@ -136,7 +171,13 @@ class db:
     """Context manager : une transaction sur une connexion du pool."""
 
     def __enter__(self):
-        self.conn = pool.getconn()
+        if not pool_slots.acquire(timeout=POOL_WAIT_SECONDS):
+            raise ApiError(503, "Service surchargé, réessayez dans quelques instants")
+        try:
+            self.conn = pool.getconn()
+        except Exception:
+            pool_slots.release()
+            raise
         return self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     def __exit__(self, exc_type, exc, tb):
@@ -147,6 +188,7 @@ class db:
                 self.conn.commit()
         finally:
             pool.putconn(self.conn)
+            pool_slots.release()
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +219,7 @@ def get_order(order_id):
         row = cur.fetchone()
     if not row:
         raise ApiError(404, "Commande introuvable")
-    row["backend"] = "vm"
+    row["backend"] = SOURCE
     if row["shipping"] is None:
         del row["shipping"]
     return row
@@ -239,8 +281,14 @@ def create_order(raw):
         short = [pid for pid, qty in per_product.items() if catalog[pid]["stock"] < qty]
         if short:
             raise ApiError(409, "Stock insuffisant pour : " + ", ".join(short))
+        # La version augmente à chaque modification : la projection DynamoDB (hybride)
+        # ignore ainsi un événement rejoué ou arrivé dans le désordre.
+        stock = []
         for pid, qty in per_product.items():
-            cur.execute("UPDATE products SET stock = stock - %s WHERE id = %s", (qty, pid))
+            cur.execute("UPDATE products SET stock = stock - %s, version = version + 1 WHERE id = %s "
+                        "RETURNING id, stock, version", (qty, pid))
+            row = cur.fetchone()
+            stock.append({"product_id": row["id"], "stock": row["stock"], "version": row["version"]})
 
         history = [{"status": "CONFIRMED", "at": created_at}]
         cur.execute(
@@ -251,14 +299,16 @@ def create_order(raw):
 
     order = {"order_id": order_id, "status": "CONFIRMED", "customer": customer, "items": items,
              "total": total, "created_at": created_at, "updated_at": created_at,
-             "history": history, "backend": "vm"}
-    publish("ORDER_CREATED", order)
+             "history": history, "backend": SOURCE}
+    publish("ORDER_CREATED", order, stock)
     return order
 
 
-def publish(event_type, order):
+def publish(event_type, order, stock=None):
     event = {"event_id": str(uuid.uuid4()), "event_type": event_type, "occurred_at": now_iso(),
-             "source": "vm", "order": order}
+             "source": SOURCE, "order": order}
+    if stock is not None:
+        event["stock"] = stock
     message = {"default": json.dumps(event, default=to_json)}
     if event_type == "ORDER_CREATED":
         lines = "\n".join(f"  - {i['quantity']} x {i['name']} (taille {i['size']})" for i in order["items"])
@@ -276,7 +326,7 @@ def publish(event_type, order):
         TopicArn=TOPIC_ARN, MessageStructure="json", Message=json.dumps(message), Subject=subject,
         MessageAttributes={
             "event_type": {"DataType": "String", "StringValue": event_type},
-            "source": {"DataType": "String", "StringValue": "vm"},
+            "source": {"DataType": "String", "StringValue": SOURCE},
         })
 
 
@@ -291,7 +341,7 @@ def advance(event):
     if new_status == "SHIPPED":
         shipping = {"carrier": random.choice(CARRIERS), "tracking_number": "FR" + uuid.uuid4().hex[:12].upper()}
     with db() as cur:
-        # Mise à jour conditionnelle => idempotent si SQS livre deux fois le message.
+        # Mise à jour conditionnelle => la transition n'est jamais appliquée deux fois.
         cur.execute(
             """UPDATE orders SET status = %s, updated_at = %s,
                       history = history || %s::jsonb, shipping = COALESCE(%s::jsonb, shipping)
@@ -299,11 +349,18 @@ def advance(event):
             (new_status, now, json.dumps([{"status": new_status, "at": now}]),
              json.dumps(shipping) if shipping else None, order_id, expected))
         order = cur.fetchone()
-    if not order:
+        republish = order is None
+        if republish:
+            cur.execute("SELECT * FROM orders WHERE order_id = %s", (order_id,))
+            order = cur.fetchone()
+    # Statut déjà à jour : un essai précédent a pu échouer après la mise à jour, en
+    # publiant sur SNS. On republie l'événement suivant, sinon la commande reste bloquée.
+    if not order or (republish and order["status"] != new_status):
         log(msg="déjà traité, ignoré", order_id=order_id, event=event["event_type"])
         return
-    log(msg="statut mis à jour", order_id=order_id, status=new_status)
-    order["backend"] = "vm"
+    log(msg="statut déjà à jour, événement republié" if republish else "statut mis à jour",
+        order_id=order_id, status=new_status)
+    order["backend"] = SOURCE
     publish(next_event, order)
 
 
@@ -411,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(405, "Méthode non autorisée")
                 return self.send_static(path)
             if method == "GET" and path == "/api/health":
-                return self.send_json(200, {"status": "ok", "backend": "vm", "region": REGION,
+                return self.send_json(200, {"status": "ok", "backend": SOURCE, "region": REGION,
                                             "instance": socket.gethostname()})
             if method == "GET" and path == "/api/products":
                 return self.send_json(200, {"products": list_products(params.get("category"))})
@@ -449,8 +506,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     connect()
-    threading.Thread(target=poll_forever, args=(QUEUE_URL, advance), daemon=True).start()
+    if QUEUE_URL:
+        threading.Thread(target=poll_forever, args=(QUEUE_URL, advance), daemon=True).start()
     if KAFKA_BOOTSTRAP:
         start_kafka()
-    log(msg="serveur démarré", port=PORT)
+    log(msg="serveur démarré", port=PORT, source=SOURCE)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

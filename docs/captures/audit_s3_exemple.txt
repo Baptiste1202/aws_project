@@ -1,0 +1,68 @@
+# Événements archivés dans s3://threadly-dev-audit-bdf555/events/ : 291 fichiers
+
+Répartition par solution (source) et type :
+  hybrid     ORDER_CREATED  47
+  hybrid     ORDER_PACKED   47
+  hybrid     ORDER_SHIPPED  47
+  serverless ORDER_CREATED  18
+  serverless ORDER_PACKED   18
+  serverless ORDER_SHIPPED  18
+  vm         ORDER_CREATED  32
+  vm         ORDER_PACKED   32
+  vm         ORDER_SHIPPED  32
+
+# Exemple : aws s3 cp s3://threadly-dev-audit-bdf555/events/event_type=ORDER_CREATED/date=2026-10-27/8b775f75-cc60-4aea-839f-15c032ab0c3b.json -
+# (ORDER_CREATED de la solution hybride : porte le stock RDS et sa version pour la projection)
+
+{
+    "event_id": "8b775f75-cc60-4aea-839f-15c032ab0c3b",
+    "event_type": "ORDER_CREATED",
+    "occurred_at": "2026-10-27T13:39:57+00:00",
+    "source": "hybrid",
+    "order": {
+        "order_id": "ORD-8B0DFF2BDA",
+        "status": "CONFIRMED",
+        "customer": {
+            "name": "Démo Threadly",
+            "email": "demo@example.com"
+        },
+        "items": [
+            {
+                "product_id": "TS-003",
+                "name": "T-shirt Marinière",
+                "size": "XS",
+                "quantity": 1,
+                "unit_price": 34.9
+            },
+            {
+                "product_id": "BK-001",
+                "name": "Baskets Court Classic",
+                "size": "38",
+                "quantity": 1,
+                "unit_price": 119
+            }
+        ],
+        "total": 153.9,
+        "created_at": "2026-10-27T13:39:57+00:00",
+        "updated_at": "2026-10-27T13:39:57+00:00",
+        "history": [
+            {
+                "status": "CONFIRMED",
+                "at": "2026-10-27T13:39:57+00:00"
+            }
+        ],
+        "backend": "hybrid"
+    },
+    "stock": [
+        {
+            "product_id": "TS-003",
+            "stock": 30,
+            "version": 15
+        },
+        {
+            "product_id": "BK-001",
+            "stock": 49,
+            "version": 1
+        }
+    ]
+}

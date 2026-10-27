@@ -2,6 +2,8 @@
 # CloudFront : point d'entrée HTTPS unique de chaque solution.
 #   Serverless : /*  -> S3 (site statique, OAC)   |  /api/* -> Lambda Function URL
 #   VM         : /*  -> ALB -> EC2 (sert le site et l'API)
+#   Hybride    : /*  -> S3  |  /api/orders (POST) -> ALB -> EC2 + RDS
+#                /api/* (catalogue, suivi) -> Lambda hybrid-read + DynamoDB
 # ---------------------------------------------------------------------------
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -44,7 +46,7 @@ resource "aws_cloudfront_cache_policy" "static" {
 }
 
 resource "aws_cloudfront_origin_access_control" "web" {
-  count                             = var.deploy_serverless ? 1 : 0
+  count                             = local.s3_front_enabled ? 1 : 0
   name                              = "${local.name}-web-oac"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
