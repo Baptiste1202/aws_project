@@ -41,18 +41,22 @@ locals {
   # Services lancés sur chaque EC2 : un par solution (même app.py, autre base et port).
   ec2_services = concat(
     var.deploy_vm ? [{
-      unit      = "shop"
-      source    = "vm"
-      port      = 8080
-      db_name   = "shop"
-      queue_url = aws_sqs_queue.main["vm-processing"].url
+      unit         = "shop"
+      source       = "vm"
+      port         = 8080
+      db_name      = "shop"
+      queue_url    = aws_sqs_queue.main["vm-processing"].url
+      status_table = ""
     }] : [],
     var.deploy_hybrid ? [{
-      unit      = "shop-hybrid"
-      source    = "hybrid"
-      port      = 8081
-      db_name   = "shop_hybrid"
-      queue_url = ""
+      unit    = "shop-hybrid"
+      source  = "hybrid"
+      port    = 8081
+      db_name = "shop_hybrid"
+      # Worker de réappro (écritures de stock dans RDS).
+      queue_url = aws_sqs_queue.main["hybrid-restock"].url
+      # Le statut des commandes fait foi dans le modèle de lecture DynamoDB (annulation).
+      status_table = "${local.name}-hybrid"
     }] : [],
   )
 

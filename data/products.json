@@ -4,44 +4,52 @@
     "category": "tshirt",
     "name": "T-shirt Essentiel",
     "description": "Coton bio 180 g/m², coupe droite. Le basique qui va avec tout.",
-    "price": 19.90,
+    "price": 19.9,
+    "cost_price": 8.96,
     "color": "Blanc",
     "hex": "#f4f1ea",
     "sizes": ["XS", "S", "M", "L", "XL"],
-    "stock": 120
+    "stock": 120,
+    "low_stock_threshold": 5
   },
   {
     "id": "TS-002",
     "category": "tshirt",
     "name": "T-shirt Oversize Nuit",
     "description": "Coupe ample et épaules tombantes, jersey épais lavé.",
-    "price": 29.90,
+    "price": 29.9,
+    "cost_price": 13.46,
     "color": "Noir",
     "hex": "#1f2328",
     "sizes": ["S", "M", "L", "XL"],
-    "stock": 80
+    "stock": 80,
+    "low_stock_threshold": 5
   },
   {
     "id": "TS-003",
     "category": "tshirt",
     "name": "T-shirt Marinière",
     "description": "Rayures tissées, col rond, inspiration bord de mer.",
-    "price": 34.90,
+    "price": 34.9,
+    "cost_price": 15.71,
     "color": "Bleu marine",
     "hex": "#24375e",
     "sizes": ["XS", "S", "M", "L"],
-    "stock": 45
+    "stock": 45,
+    "low_stock_threshold": 5
   },
   {
     "id": "TS-004",
     "category": "tshirt",
     "name": "T-shirt Terracotta",
     "description": "Teinture végétale, finition légèrement délavée.",
-    "price": 24.90,
+    "price": 24.9,
+    "cost_price": 11.21,
     "color": "Terracotta",
     "hex": "#c0643f",
     "sizes": ["S", "M", "L", "XL"],
-    "stock": 60
+    "stock": 60,
+    "low_stock_threshold": 5
   },
   {
     "id": "PU-001",
@@ -49,10 +57,12 @@
     "name": "Pull Col Rond Mérinos",
     "description": "Laine mérinos extra-fine, maille jersey, ne gratte pas.",
     "price": 79.00,
+    "cost_price": 35.55,
     "color": "Gris chiné",
     "hex": "#8d9096",
     "sizes": ["S", "M", "L", "XL"],
-    "stock": 40
+    "stock": 40,
+    "low_stock_threshold": 5
   },
   {
     "id": "PU-002",
@@ -60,10 +70,12 @@
     "name": "Pull Camionneur",
     "description": "Col zippé, maille côtelée épaisse pour l'hiver.",
     "price": 89.00,
+    "cost_price": 40.05,
     "color": "Vert forêt",
     "hex": "#2f5641",
     "sizes": ["M", "L", "XL"],
-    "stock": 25
+    "stock": 25,
+    "low_stock_threshold": 5
   },
   {
     "id": "PU-003",
@@ -71,10 +83,12 @@
     "name": "Sweat à capuche Atelier",
     "description": "Molleton gratté 380 g/m², poche kangourou.",
     "price": 59.00,
+    "cost_price": 26.55,
     "color": "Sable",
     "hex": "#d2b98f",
     "sizes": ["XS", "S", "M", "L", "XL"],
-    "stock": 70
+    "stock": 70,
+    "low_stock_threshold": 5
   },
   {
     "id": "PU-004",
@@ -82,10 +96,12 @@
     "name": "Cardigan Torsadé",
     "description": "Torsades irlandaises, boutons en corozo.",
     "price": 95.00,
+    "cost_price": 42.75,
     "color": "Écru",
     "hex": "#e8dcc4",
     "sizes": ["S", "M", "L"],
-    "stock": 18
+    "stock": 18,
+    "low_stock_threshold": 5
   },
   {
     "id": "BK-001",
@@ -93,10 +109,12 @@
     "name": "Baskets Court Classic",
     "description": "Cuir pleine fleur, semelle cousue, look tennis années 80.",
     "price": 119.00,
+    "cost_price": 53.55,
     "color": "Blanc",
     "hex": "#f7f7f5",
     "sizes": ["38", "39", "40", "41", "42", "43", "44", "45"],
-    "stock": 50
+    "stock": 50,
+    "low_stock_threshold": 5
   },
   {
     "id": "BK-002",
@@ -104,10 +122,12 @@
     "name": "Baskets Runner Rétro",
     "description": "Daim et mesh, semelle EVA légère.",
     "price": 99.00,
+    "cost_price": 44.55,
     "color": "Bleu ciel",
     "hex": "#7fa7d9",
     "sizes": ["37", "38", "39", "40", "41", "42", "43"],
-    "stock": 35
+    "stock": 35,
+    "low_stock_threshold": 5
   },
   {
     "id": "BK-003",
@@ -115,10 +135,12 @@
     "name": "Baskets Montantes Urban",
     "description": "Toile renforcée, col rembourré, œillets métal.",
     "price": 89.00,
+    "cost_price": 40.05,
     "color": "Rouge brique",
     "hex": "#a33b32",
     "sizes": ["39", "40", "41", "42", "43", "44"],
-    "stock": 30
+    "stock": 30,
+    "low_stock_threshold": 5
   },
   {
     "id": "BK-004",
@@ -126,9 +148,11 @@
     "name": "Baskets Trail Graphite",
     "description": "Semelle crantée, tige imperméable, pour la ville comme les sentiers.",
     "price": 129.00,
+    "cost_price": 58.05,
     "color": "Graphite",
     "hex": "#3e4248",
     "sizes": ["40", "41", "42", "43", "44", "45", "46"],
-    "stock": 22
+    "stock": 22,
+    "low_stock_threshold": 5
   }
 ]

@@ -1,8 +1,15 @@
 # Copier ce fichier en terraform.tfvars et l'adapter.
 
-# Reçoit les confirmations de commande, les alarmes et l'alerte budget.
+# Expéditeur et destinataire des e-mails (SES sandbox), des alarmes et du budget.
+# Doit être une identité SES vérifiée, créée une seule fois hors Terraform
+# (README, « Vérification SES ») ; up.sh s'arrête sinon. Vide = pas d'e-mail.
 # (Cliquer sur le lien "Confirm subscription" reçu par mail après chaque up.)
 notification_email = "vous@example.com"
+
+# Compte admin de démonstration (README, « Démonstration ») : up.sh le crée dans
+# Cognito, groupe admin, et affiche à la fin un mot de passe aléatoire, une seule fois
+# (jamais dans un fichier ni dans l'état Terraform). Vide = aucun compte créé.
+demo_admin_email = ""
 
 # Solutions déployées
 deploy_serverless = true
@@ -17,3 +24,12 @@ db_multi_az    = false # RDS Multi-AZ (payant)
 
 # Nom de domaine (zone Route 53 existante), vide = URL CloudFront
 route53_zone_name = ""
+
+# Paiement (lot 3) :
+#   "stripe"    (par défaut) : carte bancaire avec Stripe en mode test. Renseigner les
+#               deux clés du tableau de bord Stripe, mode « Test » (pk_test_ / sk_test_) ;
+#               sans elles, terraform plan échoue avec un message explicite.
+#   "simulated" : sans compte Stripe, chaque commande est confirmée aussitôt.
+payment_mode           = "stripe"
+stripe_publishable_key = "pk_test_..."
+stripe_secret_key      = "sk_test_..."

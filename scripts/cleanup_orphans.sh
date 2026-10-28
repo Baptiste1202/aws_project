@@ -106,6 +106,29 @@ delete_cache_policy() {
   aws cloudfront delete-cache-policy --id "$1" --if-match "$etag"
 }
 
+# Une distribution doit d'abord être désactivée, puis redéployée (15 min environ),
+# avant d'accepter la suppression avec son nouvel ETag.
+delete_distribution() {
+  local etag
+  aws cloudfront get-distribution-config --id "$1" >"$TMP/dist.json" || return 1
+  etag=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ETag"])' "$TMP/dist.json")
+  if [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["DistributionConfig"]["Enabled"])' "$TMP/dist.json")" = True ]; then
+    python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["DistributionConfig"]; c["Enabled"]=False; json.dump(c,open(sys.argv[2],"w"))' \
+      "$TMP/dist.json" "$TMP/dist-off.json"
+    aws cloudfront update-distribution --id "$1" --if-match "$etag" \
+      --distribution-config "file://$TMP/dist-off.json" >/dev/null || return 1
+  fi
+  aws cloudfront wait distribution-deployed --id "$1" || return 1
+  etag=$(aws cloudfront get-distribution --id "$1" --query ETag --output text) || return 1
+  aws cloudfront delete-distribution --id "$1" --if-match "$etag"
+}
+
+delete_function() {
+  local etag
+  etag=$(aws cloudfront describe-function --name "$1" --query ETag --output text) || return 1
+  aws cloudfront delete-function --name "$1" --if-match "$etag"
+}
+
 delete_oac() {
   local etag
   etag=$(aws cloudfront get-origin-access-control --id "$1" --query ETag --output text) || return 1
@@ -247,9 +270,12 @@ done
 section "CloudFront"
 for d in $(names cloudfront list-distributions --query "DistributionList.Items[?contains(Comment,'$PREFIX')].Id"); do
   if orphan aws_cloudfront_distribution "$d"; then
-    printf '   ⚠️  distribution %s : à désactiver puis supprimer dans la console (non géré par ce script)\n' "$d"
-    ERRORS=$((ERRORS + 1))
+    info "$(aws cloudfront get-distribution --id "$d" --query 'Distribution.[DomainName,Status,DistributionConfig.Enabled,DistributionConfig.Comment]' --output text)"
+    act "distribution $d (désactivation, attente du déploiement ~15 min, suppression)" delete_distribution "$d"
   fi
+done
+for f in $(names cloudfront list-functions --query "FunctionList.Items[?starts_with(Name,'$PREFIX')].Name" | sort -u); do
+  orphan aws_cloudfront_function "$f" && act "CloudFront Function $f" delete_function "$f"
 done
 for p in $(names cloudfront list-cache-policies --type custom --query "CachePolicyList.Items[?starts_with(CachePolicy.CachePolicyConfig.Name,'$PREFIX')].CachePolicy.Id"); do
   orphan aws_cloudfront_cache_policy "$p" && act "cache policy $p" delete_cache_policy "$p"
@@ -258,7 +284,7 @@ for o in $(names cloudfront list-origin-access-controls --query "OriginAccessCon
   orphan aws_cloudfront_origin_access_control "$o" && act "Origin Access Control $o" delete_oac "$o"
 done
 
-section "Auto Scaling, EC2, Lambda"
+section "Auto Scaling, EC2, Lambda, Step Functions, API Gateway"
 for g in $(names autoscaling describe-auto-scaling-groups --query "AutoScalingGroups[?starts_with(AutoScalingGroupName,'$PREFIX')].AutoScalingGroupName"); do
   orphan aws_autoscaling_group "$g" && act "Auto Scaling Group $g (et ses instances)" aws autoscaling delete-auto-scaling-group --auto-scaling-group-name "$g" --force-delete
 done
@@ -267,6 +293,12 @@ for lt in $(names ec2 describe-launch-templates --query "LaunchTemplates[?starts
 done
 for f in $(names lambda list-functions --query "Functions[?starts_with(FunctionName,'$PREFIX')].FunctionName"); do
   orphan aws_lambda_function "$f" && act "Lambda $f" delete_lambda "$f"
+done
+for sm in $(names stepfunctions list-state-machines --query "stateMachines[?starts_with(name,'$PREFIX')].stateMachineArn"); do
+  orphan aws_sfn_state_machine "$sm" && act "machine d'état ${sm##*:}" aws stepfunctions delete-state-machine --state-machine-arn "$sm"
+done
+for api in $(names apigatewayv2 get-apis --query "Items[?starts_with(Name,'$PREFIX')].ApiId"); do
+  orphan aws_apigatewayv2_api "$api" && act "API WebSocket $api (routes et étapes comprises)" aws apigatewayv2 delete-api --api-id "$api"
 done
 
 section "RDS"
@@ -345,11 +377,34 @@ for b in $(names budgets describe-budgets --account-id "$ACCOUNT" --query "Budge
 done
 
 # ---------------------------------------------------------------------------
+section "Scheduler, Athena, Glue (lot 4)"
+for sc in $(names scheduler list-schedules --name-prefix "$PREFIX" --query 'Schedules[].Name'); do
+  orphan aws_scheduler_schedule "$sc" && act "planification $sc" aws scheduler delete-schedule --name "$sc"
+done
+for wg in $(names athena list-work-groups --query "WorkGroups[?starts_with(Name,'$PREFIX')].Name"); do
+  orphan aws_athena_workgroup "$wg" && act "groupe de travail Athena $wg (et ses requêtes nommées)" \
+    aws athena delete-work-group --work-group "$wg" --recursive-delete-option
+done
+GLUE_DB="$(echo "${PREFIX}_audit" | tr '-' '_')"
+for db in $(names glue get-databases --query "DatabaseList[?Name=='$GLUE_DB'].Name"); do
+  orphan aws_glue_catalog_database "$db" && act "base Glue $db (et ses tables)" aws glue delete-database --name "$db"
+done
+
+# ---------------------------------------------------------------------------
+# Identités SES : vérifiées une fois à la main, hors Terraform (README, « Vérification
+# SES »). Jamais supprimées : une nouvelle vérification redemanderait un clic par e-mail.
+section "SES (à conserver)"
+for id in $(names sesv2 list-email-identities --query 'EmailIdentities[].IdentityName'); do
+  printf '   🔒 identité SES %s : vérifiée hors Terraform, NE PAS supprimer\n' "$id"
+  KEPT=$((KEPT + 1))
+done
+
+# ---------------------------------------------------------------------------
 section "Résumé"
 if $APPLY; then
-  info "Supprimées : $DELETED, laissées à down.sh : $KEPT, erreurs : $ERRORS"
+  info "Supprimées : $DELETED, laissées en place : $KEPT, erreurs : $ERRORS"
 else
-  info "À supprimer : $DELETED, laissées à down.sh : $KEPT, à traiter à la main : $ERRORS"
+  info "À supprimer : $DELETED, laissées en place : $KEPT, à traiter à la main : $ERRORS"
   info "Rien n'a été supprimé. Pour supprimer : $0 --apply"
 fi
 exit $((ERRORS > 0))

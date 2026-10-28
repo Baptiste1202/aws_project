@@ -1,0 +1,473 @@
+{
+  "uid": "threadly-ventes-stock",
+  "title": "Threadly : ventes et stock",
+  "editable": false,
+  "tags": [
+    "threadly"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "description": "Ventes et stock des solutions VM et hybride (PostgreSQL), stack locale. Jours en UTC, comme le tableau de bord du back-office.",
+  "templating": {
+    "list": [
+      {
+        "name": "base",
+        "label": "Solution",
+        "type": "datasource",
+        "query": "grafana-postgresql-datasource",
+        "current": {
+          "text": "PostgreSQL VM (shop)",
+          "value": "pg-vm"
+        },
+        "hide": 0,
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Chiffre d'affaires du jour",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(sum(total), 0) AS ca FROM orders WHERE status IN ('CONFIRMED','PACKED','SHIPPED','IN_TRANSIT','DELIVERED','RETURN_REQUESTED','RETURNED') AND COALESCE(payment->>'status', '') <> 'refunded' AND created_at::timestamptz >= date_trunc('day', now())"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3274D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3274D9",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Chiffre d'affaires sur 7 jours",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(sum(total), 0) AS ca FROM orders WHERE status IN ('CONFIRMED','PACKED','SHIPPED','IN_TRANSIT','DELIVERED','RETURN_REQUESTED','RETURNED') AND COALESCE(payment->>'status', '') <> 'refunded' AND created_at::timestamptz >= date_trunc('day', now()) - interval '6 days'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3274D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3274D9",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Commandes payées du jour",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS commandes FROM orders WHERE status IN ('CONFIRMED','PACKED','SHIPPED','IN_TRANSIT','DELIVERED','RETURN_REQUESTED','RETURNED') AND COALESCE(payment->>'status', '') <> 'refunded' AND created_at::timestamptz >= date_trunc('day', now())"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3274D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3274D9",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Valeur du stock (prix de revient)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(sum(s.on_hand * p.cost_price), 0) AS valeur FROM stock s JOIN products p ON p.id = s.product_id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyEUR",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3274D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3274D9",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Chiffre d'affaires par jour",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', created_at::timestamptz) AS time, sum(total) AS \"chiffre d'affaires\" FROM orders WHERE status IN ('CONFIRMED','PACKED','SHIPPED','IN_TRANSIT','DELIVERED','RETURN_REQUESTED','RETURNED') AND COALESCE(payment->>'status', '') <> 'refunded' AND $__timeFilter(created_at::timestamptz) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "barAlignment": 0
+          },
+          "unit": "currencyEUR"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "Commandes par statut (période affichée)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT status AS statut, count(*) AS commandes FROM orders WHERE $__timeFilter(created_at::timestamptz) GROUP BY status ORDER BY 2 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3274D9"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3274D9",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Top ventes (période affichée)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT i->>'name' AS produit, sum((i->>'quantity')::int) AS \"quantité\", sum((i->>'quantity')::int * (i->>'unit_price')::numeric) AS \"chiffre d'affaires\" FROM orders, jsonb_array_elements(items) AS i WHERE status IN ('CONFIRMED','PACKED','SHIPPED','IN_TRANSIT','DELIVERED','RETURN_REQUESTED','RETURNED') AND COALESCE(payment->>'status', '') <> 'refunded' AND $__timeFilter(created_at::timestamptz) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Stock : ruptures et stocks bas d'abord",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.id, p.name AS produit, sum(s.on_hand) AS physique, sum(s.on_hand - s.reserved) AS disponible, p.low_stock_threshold AS seuil, sum(s.on_hand) * p.cost_price AS valeur FROM products p JOIN stock s ON s.product_id = p.id WHERE NOT p.archived GROUP BY p.id ORDER BY disponible, p.id LIMIT 25"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Mouvements de stock par type (unités par heure)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${base}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${base}"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('hour', at::timestamptz) AS time, type AS metric, sum(abs(delta)) AS \"unités\" FROM stock_movements WHERE $__timeFilter(at::timestamptz) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    }
+  ]
+}

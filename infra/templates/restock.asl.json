@@ -1,0 +1,29 @@
+{
+  "Comment": "Réapprovisionnement sur alerte de stock bas : bon de commande fournisseur (un seul ouvert par produit), délai de livraison simulé, réception (mouvement RESTOCK). Chaque étape appelle la Lambda supplier.",
+  "StartAt": "OrderFromSupplier",
+  "States": {
+    "OrderFromSupplier": {
+      "Type": "Task",
+      "Resource": "${supplier_arn}",
+      "Parameters": { "action": "order", "alert.$": "$.alert" },
+      "ResultPath": "$.po",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "Next": "OrderedOrStop"
+    },
+    "OrderedOrStop": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.po.stop", "BooleanEquals": true, "Next": "AlreadyOrdered" }],
+      "Default": "WaitSupplierDelivery"
+    },
+    "WaitSupplierDelivery": { "Type": "Wait", "Seconds": ${delay}, "Next": "ReceiveDelivery" },
+    "ReceiveDelivery": {
+      "Type": "Task",
+      "Resource": "${supplier_arn}",
+      "Parameters": { "action": "receive", "po_id.$": "$.po.po_id" },
+      "ResultPath": "$.received",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "End": true
+    },
+    "AlreadyOrdered": { "Type": "Succeed", "Comment": "Un bon de commande est déjà ouvert pour ce produit." }
+  }
+}

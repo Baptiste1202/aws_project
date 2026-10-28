@@ -1,0 +1,33 @@
+Step Functions : dernières exécutions réussies (historique lu par GetExecutionHistory)
+
+== threadly-dev-fulfillment : 53 exécution(s), dont 50 réussies affichées au plus
+   exécution ORD-A39925AD4B : 2026-10-28T12:05:09.132000+01:00 → 2026-10-28T12:05:25.022000+01:00
+   +   0.0 s  Task     Pack
+   +   0.2 s  Choice   PackedOrStop
+   +   0.2 s  Wait     WaitBeforeShipping
+   +   5.3 s  Task     Ship
+   +   5.4 s  Choice   ShippedOrStop
+   +   5.4 s  Wait     WaitCarrierPickup
+   +  10.5 s  Task     InTransit
+   +  10.6 s  Wait     WaitDelivery
+   +  15.7 s  Task     Deliver
+
+== threadly-dev-hybrid-fulfillment : 51 exécution(s), dont 50 réussies affichées au plus
+   exécution ORD-E188F51D17 : 2026-10-28T12:02:30.835000+01:00 → 2026-10-28T12:02:46.700000+01:00
+   +   0.0 s  Task     Pack
+   +   0.2 s  Choice   PackedOrStop
+   +   0.2 s  Wait     WaitBeforeShipping
+   +   5.2 s  Task     Ship
+   +   5.4 s  Choice   ShippedOrStop
+   +   5.4 s  Wait     WaitCarrierPickup
+   +  10.5 s  Task     InTransit
+   +  10.7 s  Wait     WaitDelivery
+   +  15.7 s  Task     Deliver
+
+== threadly-dev-restock : 18 exécution(s), dont 18 réussies affichées au plus
+   exécution 47a5479e-9dee-49f8-9d2a-cce4e306252c : 2026-10-28T12:05:05.030000+01:00 → 2026-10-28T12:05:11.154000+01:00
+   +   0.0 s  Task     OrderFromSupplier
+   +   0.8 s  Choice   OrderedOrStop
+   +   0.8 s  Wait     WaitSupplierDelivery
+   +   5.8 s  Task     ReceiveDelivery
+

@@ -1,0 +1,18 @@
+E-mails envoyés par Amazon SES (bac à sable : 200 e-mails par 24 h glissantes, 1 par seconde)
+
+Session AWS finale (second compte), valeur lue juste avant ./down.sh :
+  $ aws sesv2 get-account --region eu-west-3 --query 'SendQuota.SentLast24Hours' --output text
+  96.0
+  -> 36 scénarios sur les trois solutions, rejeux, rapports quotidiens et captures compris ;
+     au départ de la session, la même commande renvoyait 0.0.
+
+Première tentative de session finale (premier compte), valeur lue après l'échec :
+  $ aws sesv2 get-account --region eu-west-3 --query '{prod:ProductionAccessEnabled,quota:SendQuota}'
+  "Max24HourSend": 200.0, "MaxSendRate": 1.0, "SentLast24Hours": 270.0
+  -> quota dépassé (annexe E du rapport). Correction : le mailer n'envoie plus aux
+     domaines réservés (example.com…) des commandes de test.
+
+Stack locale après la correction (messages comptés dans LocalStack, http://localhost:4566/_aws/ses,
+avant et après chaque suite ; une solution à la fois) :
+  passage 1 : VM 26, serverless 29, hybride 26
+  passage 2 : VM 24, serverless 24, hybride 24

@@ -1,0 +1,59 @@
+Athena : requêtes nommées du groupe de travail threadly-dev (base threadly_dev_audit, table events)
+
+== delai-commande-livraison : Délai moyen entre la création d'une commande et sa livraison, par solution
+
+SELECT c.source, count(*) AS commandes_livrees,
+       round(avg(date_diff('second', from_iso8601_timestamp(c.occurred_at),
+                           from_iso8601_timestamp(d.occurred_at))), 1) AS delai_moyen_s
+FROM threadly_dev_audit.events c
+JOIN threadly_dev_audit.events d ON c."order".order_id = d."order".order_id
+WHERE c.event_type = 'ORDER_CREATED' AND d.event_type = 'ORDER_DELIVERED'
+GROUP BY c.source
+ORDER BY c.source
+
+État : SUCCEEDED, données lues : 435.6 Ko, durée : 1387 ms
+
+  source     | commandes_livrees | delai_moyen_s
+  -----------+-------------------+--------------
+  hybrid     | 47                | 19.4         
+  serverless | 49                | 21.6         
+  vm         | 24                | 23.1         
+
+== annulations : Annulations par jour et par solution, et part des commandes créées
+
+SELECT date, source,
+       count_if(event_type = 'ORDER_CANCELLED') AS annulations,
+       count_if(event_type = 'ORDER_CREATED') AS commandes,
+       round(100.0 * count_if(event_type = 'ORDER_CANCELLED')
+             / nullif(count_if(event_type = 'ORDER_CREATED'), 0), 1) AS taux_pct
+FROM threadly_dev_audit.events
+WHERE event_type IN ('ORDER_CREATED', 'ORDER_CANCELLED')
+GROUP BY date, source
+ORDER BY date DESC, source
+
+État : SUCCEEDED, données lues : 389.4 Ko, durée : 1300 ms
+
+  date       | source     | annulations | commandes | taux_pct
+  -----------+------------+-------------+-----------+---------
+  2026-10-28 | hybrid     | 33          | 80        | 41.3    
+  2026-10-28 | serverless | 25          | 74        | 33.8    
+  2026-10-28 | vm         | 25          | 49        | 51.0    
+
+== chiffre-affaires-par-jour : Chiffre d'affaires par jour et par solution (paiements moins remboursements)
+
+SELECT date, source,
+       sum(CASE WHEN event_type = 'ORDER_PAID' THEN "order".total ELSE 0 END) AS encaisse,
+       sum(CASE WHEN event_type = 'ORDER_REFUNDED' THEN "order".total ELSE 0 END) AS rembourse,
+       sum(CASE WHEN event_type = 'ORDER_PAID' THEN "order".total ELSE -"order".total END) AS chiffre_affaires
+FROM threadly_dev_audit.events
+WHERE event_type IN ('ORDER_PAID', 'ORDER_REFUNDED')
+GROUP BY date, source
+ORDER BY date DESC, source
+
+État : SUCCEEDED, données lues : 152.3 Ko, durée : 1068 ms
+
+  date       | source     | encaisse           | rembourse          | chiffre_affaires  
+  -----------+------------+--------------------+--------------------+-------------------
+  2026-10-28 | hybrid     | 3059.7000000000016 | 299.59999999999997 | 2760.1000000000013
+  2026-10-28 | serverless | 3188.6000000000013 | 299.59999999999997 | 2889.000000000001 
+  2026-10-28 | vm         | 1566.7000000000007 | 149.8              | 1416.9000000000005

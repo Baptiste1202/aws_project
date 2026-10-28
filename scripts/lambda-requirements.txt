@@ -1,0 +1,6 @@
+# Dépendances de la Lambda "thumbnailer" (miniatures), pour la plateforme Lambda :
+# Linux, arm64 (manylinux aarch64), CPython 3.12. Version et empreinte figées
+# (pip --require-hashes) : empreinte vérifiée contre celle publiée par PyPI.
+# Construit par scripts/build_lambda_deps.sh (appelé par up.sh).
+pillow==11.3.0 \
+    --hash=sha256:eb76541cba2f958032d79d143b98a3a6b3ea87f0959bbe256c0b5e416599fd5d

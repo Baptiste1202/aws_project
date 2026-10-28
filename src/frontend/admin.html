@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threadly — Back-office</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="admin">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◐</span>
+      <span>Threadly · back-office</span>
+      <span id="backend" class="badge">…</span>
+    </div>
+    <div class="topbar-actions"><a class="admin-link" href="index.html">Boutique</a></div>
+  </header>
+
+  <main>
+    <section class="panel" id="login">
+      <h2>Connexion (rôle admin ou magasinier)</h2>
+      <form id="login-form" class="row">
+        <label>E-mail <input id="login-user" type="email" autocomplete="username" required></label>
+        <label>Mot de passe <input id="login-password" type="password" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Se connecter</button>
+      </form>
+      <p class="muted">Sur AWS : comptes Cognito des groupes <code>admin</code> ou <code>magasinier</code>.
+        En local : <code>admin@threadly.local</code> / <code>admin-local-pass</code>.</p>
+      <p id="login-status" class="status"></p>
+    </section>
+    <p id="whoami" class="muted" hidden></p>
+
+    <div id="app" hidden>
+      <section class="panel">
+        <h2>Tableau de bord</h2>
+        <div class="kpis" id="dash-kpis"></div>
+        <div class="row dash">
+          <div><h3>Top ventes (7 jours)</h3><ol id="dash-top" class="muted"></ol></div>
+          <div><h3>Commandes par statut (7 jours)</h3><ul id="dash-status" class="muted"></ul></div>
+          <div><h3>Ruptures et stocks bas</h3><ul id="dash-stock" class="muted"></ul></div>
+        </div>
+        <div class="row" data-role="admin">
+          <button class="secondary" id="report-now" type="button">Envoyer le rapport du jour (CSV)</button>
+        </div>
+        <p id="report-status" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Valorisation du stock</h2>
+        <div class="kpis" id="valuation"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Produits</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Id</th><th>Nom</th><th>Catégorie</th><th class="num">Prix</th><th class="num">Coût</th>
+            <th class="num">Seuil</th><th class="num">Paris</th><th class="num">Lyon</th><th class="num">Disponible</th><th>Image</th><th></th></tr></thead>
+          <tbody id="products"></tbody>
+        </table></div>
+        <h3 data-role="admin">Créer ou modifier</h3>
+        <form id="product-form" class="row" data-role="admin">
+          <label>Id <input name="id" placeholder="AA-000" required pattern="[A-Z]{2}-[0-9]{3,9}" size="12"></label>
+          <label>Nom <input name="name" required></label>
+          <label>Catégorie <select name="category"><option>tshirt</option><option>pull</option><option>baskets</option></select></label>
+          <label>Description <input name="description" required></label>
+          <label>Prix <input name="price" type="number" step="0.01" min="0" required size="6"></label>
+          <label>Coût <input name="cost_price" type="number" step="0.01" min="0" size="6"></label>
+          <label>Seuil <input name="low_stock_threshold" type="number" min="0" value="5" size="4"></label>
+          <label>Couleur <input name="color" required size="8"></label>
+          <label>Hex <input name="hex" value="#888888" required size="7"></label>
+          <label>Tailles <input name="sizes" placeholder="S|M|L" required size="10"></label>
+          <button class="primary" type="submit">Enregistrer</button>
+        </form>
+        <p id="product-status" class="status"></p>
+        <h3 data-role="admin">Image du produit</h3>
+        <div class="row" data-role="admin">
+          <label>Produit <select id="image-product"></select></label>
+          <label>Fichier (JPEG, PNG ou WebP, 5 Mo au plus)
+            <input id="image-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+          <button class="secondary" id="image-upload" type="button">Envoyer l'image</button>
+        </div>
+        <p id="image-status" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Mouvement de stock</h2>
+        <form id="movement-form" class="row">
+          <label>Produit <select name="product_id" id="movement-product"></select></label>
+          <label>Entrepôt <select name="warehouse"><option value="PAR">Paris</option><option value="LYS">Lyon</option></select></label>
+          <label>Type <select name="type">
+            <option value="RESTOCK">Réappro (+)</option><option value="BREAKAGE">Casse (−)</option><option value="INVENTORY">Inventaire (=)</option>
+          </select></label>
+          <label>Quantité <input name="quantity" type="number" min="0" required size="5"></label>
+          <label>Motif <input name="reason" size="18"></label>
+          <button class="primary" type="submit">Enregistrer</button>
+        </form>
+        <p id="movement-status" class="status"></p>
+        <h3>Stocks bas</h3>
+        <p id="low" class="muted"></p>
+        <h3>Journal (50 derniers mouvements)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Date</th><th>Produit</th><th>Entrepôt</th><th>Type</th><th class="num">Variation</th><th class="num">Stock après</th><th>Réf.</th><th>Motif</th></tr></thead>
+          <tbody id="journal"></tbody>
+        </table></div>
+      </section>
+
+      <section class="panel">
+        <h2>Retours à réceptionner</h2>
+        <p class="muted">À réception du colis : remise en stock (mouvement « Retour ») puis remboursement du client.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Commande</th><th>Demandé le</th><th>Client</th><th>Articles</th><th>Motif</th>
+            <th>Étiquette</th><th class="num">Montant</th><th></th></tr></thead>
+          <tbody id="returns"></tbody>
+        </table></div>
+        <p id="returns-status" class="status"></p>
+        <h3>Bons de commande fournisseur (réappro automatique sur stock bas)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Bon</th><th>Créé le</th><th>Produit</th><th>Fournisseur</th><th>Entrepôt</th>
+            <th class="num">Quantité</th><th>Statut</th><th>Reçu le</th></tr></thead>
+          <tbody id="purchase-orders"></tbody>
+        </table></div>
+      </section>
+
+      <section class="panel" data-role="admin">
+        <h2>Codes promo</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Code</th><th>Type</th><th class="num">Valeur</th><th class="num">Minimum</th>
+            <th class="num">Utilisations</th><th>Expiration</th><th>Actif</th></tr></thead>
+          <tbody id="promos"></tbody>
+        </table></div>
+        <form id="promo-form" class="row">
+          <label>Code <input name="code" required pattern="[A-Za-z0-9]{3,20}" size="10"></label>
+          <label>Type <select name="type"><option value="percent">%</option><option value="fixed">€</option></select></label>
+          <label>Valeur <input name="value" type="number" step="0.01" min="0.01" required size="5"></label>
+          <label>Minimum <input name="min_total" type="number" step="0.01" min="0" size="5"></label>
+          <label>Utilisations max <input name="max_uses" type="number" min="1" size="4"></label>
+          <label>Expiration <input name="expires_at" type="datetime-local"></label>
+          <button class="primary" type="submit">Créer</button>
+        </form>
+        <p id="promo-status" class="status"></p>
+      </section>
+
+      <section class="panel" data-role="admin">
+        <h2>Catalogue CSV (S3)</h2>
+        <div class="row">
+          <button class="secondary" id="export">Exporter le catalogue</button>
+          <label>Fichier à importer <input type="file" id="import-file" accept=".csv,text/csv"></label>
+          <button class="primary" id="import">Importer</button>
+        </div>
+        <p id="csv-status" class="status"></p>
+      </section>
+    </div>
+  </main>
+  <script src="auth.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

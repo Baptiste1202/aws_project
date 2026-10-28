@@ -78,6 +78,17 @@ d = json.load(open(sys.argv[1]))
 print($2)" "$1" 2>/dev/null
 }
 
+# missing_events "LISTE" : événements du parcours d'une commande absents de LISTE.
+missing_events() {
+  local e
+  for e in ORDER_CREATED ORDER_PAID ORDER_PACKED ORDER_SHIPPED ORDER_IN_TRANSIT ORDER_DELIVERED; do
+    case " $1 " in
+      *" $e "*) ;;
+      *) printf '%s ' "$e" ;;
+    esac
+  done
+}
+
 stock_of() {
   [ "$(api GET "/products/$1" "" "$TMP/stock")" = 200 ] && json "$TMP/stock" 'd["stock"]'
 }
@@ -107,7 +118,8 @@ if [ "$code" != 200 ]; then
   [ "$MODE" = local ] && info "Démarrer la stack : docker compose -f local/docker-compose.yml up --build -d"
   exit 1
 fi
-info "Backend : $(json "$TMP/body" 'd["backend"]') ($(json "$TMP/body" 'd["region"]'))"
+info "Backend : $(json "$TMP/body" 'd["backend"]') ($(json "$TMP/body" 'd["region"]')), paiement $(json "$TMP/body" 'd["payment"]["type"]'), traitement $(json "$TMP/body" 'd["fulfillment"]')"
+cp "$TMP/body" "$TMP/health"
 
 # ---------------------------------------------------------------------------
 title "1. Afficher le catalogue"
@@ -123,7 +135,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-title "2. Commande de plusieurs produits, suivie jusqu'à SHIPPED"
+title "2. Commande de plusieurs produits, payée, suivie jusqu'à DELIVERED"
 # ---------------------------------------------------------------------------
 
 # Les deux produits les mieux approvisionnés : 2 du premier, 1 du second.
@@ -131,7 +143,7 @@ read -r P1 S1 STOCK1 P2 S2 STOCK2 <<<"$(json "$TMP/catalog" \
   '" ".join("%s %s %s" % (p["id"], p["sizes"][0], p["stock"]) for p in sorted(d["products"], key=lambda p: -p["stock"])[:2])')"
 
 if [ -z "${P2:-}" ] || [ "${STOCK1:-0}" -lt 2 ] || [ "${STOCK2:-0}" -lt 1 ]; then
-  skip "Commande jusqu'à SHIPPED" "stock insuffisant, réinitialiser les données"
+  skip "Commande payée jusqu'à DELIVERED" "stock insuffisant, réinitialiser les données"
 else
   info "Commande : 2 × $P1 (taille $S1) + 1 × $P2 (taille $S2)"
   body="{\"customer\":{\"name\":\"Scénario de test\",\"email\":\"test@example.com\"},\"items\":[
@@ -140,14 +152,21 @@ else
   code=$(api POST /orders "$body" "$TMP/order")
   ORDER_ID=$(json "$TMP/order" 'd["order_id"]')
   if [ "$code" != 201 ] || [ -z "$ORDER_ID" ]; then
-    ko "Commande jusqu'à SHIPPED" "POST /api/orders a répondu $code : $(cat "$TMP/order")"
+    ko "Commande payée jusqu'à DELIVERED" "POST /api/orders a répondu $code : $(cat "$TMP/order")"
   else
     ORDER_DATE=$(json "$TMP/order" 'd["created_at"][:10]')
-    info "$ORDER_ID créée : $(json "$TMP/order" 'd["status"]'), total $(json "$TMP/order" 'd["total"]') €"
+    info "$ORDER_ID créée : $(json "$TMP/order" 'd["status"]'), total $(json "$TMP/order" 'd["total"]') € (dont livraison $(json "$TMP/order" 'd["shipping_fee"]') €)"
+    # Paiement par carte de test, comme Stripe.js (scripts/testpay.py), puis confirm-payment.
+    if python3 "$ROOT/scripts/testpay.py" "$BASE" "$TMP/order" >"$TMP/paid"; then
+      cp "$TMP/paid" "$TMP/order"
+      info "Payée ($(json "$TMP/order" 'd["payment"]["provider"]')) : $(json "$TMP/order" 'd["status"]')"
+    else
+      info "❌ paiement refusé : $(cat "$TMP/paid")"
+    fi
     start=$SECONDS
-    last=CONFIRMED
-    status=CONFIRMED
-    while [ "$status" != SHIPPED ] && [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
+    last=$(json "$TMP/order" 'd["status"]')
+    status=$last
+    while [ "$status" != DELIVERED ] && [ "$status" != CANCELLED ] && [ $((SECONDS - start)) -lt "$TIMEOUT" ]; do
       sleep 2
       # 404 possible juste après la création (hybride : commande pas encore projetée) : on réessaie.
       [ "$(api GET "/orders/$ORDER_ID" "" "$TMP/order")" = 200 ] || continue
@@ -161,16 +180,16 @@ else
     tracking=$(json "$TMP/order" 'd["shipping"]["carrier"] + " " + d["shipping"]["tracking_number"]')
     new1=$(wait_stock "$P1" $((STOCK1 - 2)))
     new2=$(wait_stock "$P2" $((STOCK2 - 1)))
-    if [ "$status" != SHIPPED ]; then
-      ko "Commande jusqu'à SHIPPED" "toujours $status après $TIMEOUT s"
-    elif [ "$history" != "CONFIRMED,PACKED,SHIPPED" ]; then
-      ko "Commande jusqu'à SHIPPED" "historique inattendu : $history"
+    if [ "$status" != DELIVERED ]; then
+      ko "Commande payée jusqu'à DELIVERED" "toujours $status après $TIMEOUT s"
+    elif [ "$history" != "PENDING_PAYMENT,CONFIRMED,PACKED,SHIPPED,IN_TRANSIT,DELIVERED" ]; then
+      ko "Commande payée jusqu'à DELIVERED" "historique inattendu : $history"
     elif [ "$new1" -gt $((STOCK1 - 2)) ] || [ "$new2" -gt $((STOCK2 - 1)) ]; then
-      ko "Commande jusqu'à SHIPPED" "stock non décrémenté ($P1 : $STOCK1 → $new1, $P2 : $STOCK2 → $new2)"
+      ko "Commande payée jusqu'à DELIVERED" "stock non décrémenté ($P1 : $STOCK1 → $new1, $P2 : $STOCK2 → $new2)"
     else
       info "Expédiée : $tracking"
       info "Stock : $P1 $STOCK1 → $new1, $P2 $STOCK2 → $new2"
-      ok "Commande jusqu'à SHIPPED" "CONFIRMED → PACKED → SHIPPED en $((SECONDS - start)) s, stock décrémenté"
+      ok "Commande payée jusqu'à DELIVERED" "payée → PACKED → SHIPPED → IN_TRANSIT → DELIVERED en $((SECONDS - start)) s ($(json "$TMP/health" 'd.get("fulfillment") or "?"')), stock décrémenté"
     fi
   fi
 fi
@@ -275,7 +294,7 @@ else
   if [ -z "$BUCKET" ]; then
     ko "Audit S3" "bucket inconnu : lancer depuis le dépôt après ./up.sh, ou définir AUDIT_BUCKET"
   else
-    # La Lambda audit archive chaque événement : on attend les 3 de la commande du scénario 2.
+    # La Lambda audit archive chaque événement : on attend les 6 de la commande du scénario 2.
     today=$(date -u +%F)
     start=$SECONDS
     found=""
@@ -284,20 +303,47 @@ else
       s3cli s3 cp "s3://$BUCKET/events/" "$TMP/audit" --recursive --quiet \
         --exclude '*' --include "*date=$ORDER_DATE/*" --include "*date=$today/*" 2>"$TMP/aws.err"
       found=$(grep -rl "$ORDER_ID" "$TMP/audit" 2>/dev/null | sed 's|.*event_type=\([A-Z_]*\)/.*|\1|' | sort -u | tr '\n' ' ')
-      case "$found" in *ORDER_CREATED*ORDER_PACKED*ORDER_SHIPPED* | *ORDER_CREATED*ORDER_SHIPPED*ORDER_PACKED*) break ;; esac
+      [ -z "$(missing_events "$found")" ] && break
       sleep 5
     done
     info "Derniers fichiers de s3://$BUCKET/events/ :"
     s3cli s3 ls "s3://$BUCKET/events/" --recursive 2>/dev/null | sort | tail -6 | sed 's/^/     /'
     if [ -s "$TMP/aws.err" ] && [ -z "$found" ]; then
       ko "Audit S3" "$(head -1 "$TMP/aws.err")"
-    elif [ "$(echo "$found" | wc -w | tr -d ' ')" = 3 ]; then
-      ok "Audit S3" "les 3 événements de $ORDER_ID sont archivés ($found)"
+    elif [ -z "$(missing_events "$found")" ]; then
+      ok "Audit S3" "les 6 événements de $ORDER_ID sont archivés ($found)"
     else
-      ko "Audit S3" "événements archivés pour $ORDER_ID : ${found:-aucun}"
+      ko "Audit S3" "événements archivés pour $ORDER_ID : ${found:-aucun} (manquants : $(missing_events "$found"))"
     fi
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# Scénarios 6 à 14 (lot 1 : stock), en Python : voir scripts/scenarios_stock.py.
+# Ignorés avec SKIP_STOCK=1 (ils créent des produits de test ZZ-nnnnnnnnn, uniques à chaque lancement).
+# ---------------------------------------------------------------------------
+
+run_python_scenarios() {
+  while IFS= read -r line; do
+    case "$line" in
+      RESULT:❌*) RESULTS+=("${line#RESULT:}"); FAILED=$((FAILED + 1)) ;;
+      RESULT:*) RESULTS+=("${line#RESULT:}") ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < <(LOCALSTACK_URL="$LOCALSTACK" python3 "$ROOT/scripts/$1" "$BASE" "$MODE" 2>&1)
+}
+
+[ "${SKIP_STOCK:-0}" != 1 ] && run_python_scenarios scenarios_stock.py
+# Scénarios 15 à 20 (lot 2a : comptes, recherche, codes promo, avis, souhaits).
+[ "${SKIP_CLIENT:-0}" != 1 ] && run_python_scenarios scenarios_client.py
+# Scénarios 21 et 22 (lot 2b : images produit, suivi en temps réel).
+[ "${SKIP_MEDIA:-0}" != 1 ] && run_python_scenarios scenarios_media.py
+# Scénarios 23 à 28 (lot 3a : paiement, purge des impayés, livraison, facture, e-mails).
+[ "${SKIP_ORDER:-0}" != 1 ] && run_python_scenarios scenarios_order.py
+# Scénarios 29 à 31 (lot 3b : retours et remboursements, réappro fournisseur).
+[ "${SKIP_RETURNS:-0}" != 1 ] && run_python_scenarios scenarios_returns.py
+# Scénarios 32 à 35 (lot 4 : tableau de bord, rapport quotidien, Athena + Glue, X-Ray).
+[ "${SKIP_PILOTAGE:-0}" != 1 ] && run_python_scenarios scenarios_pilotage.py
 
 # ---------------------------------------------------------------------------
 title "Résumé"

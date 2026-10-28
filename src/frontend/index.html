@@ -13,9 +13,13 @@
       <span>Threadly</span>
       <span id="backend" class="badge" title="Solution qui sert cette page">…</span>
     </div>
-    <button id="cart-button" class="cart-button" aria-label="Ouvrir le panier">
-      Panier <span id="cart-count" class="count">0</span>
-    </button>
+    <div class="topbar-actions">
+      <a class="admin-link" href="admin.html">Back-office</a>
+      <button id="account-button" class="cart-button">Se connecter</button>
+      <button id="cart-button" class="cart-button" aria-label="Ouvrir le panier">
+        Panier <span id="cart-count" class="count">0</span>
+      </button>
+    </div>
   </header>
 
   <main>
@@ -30,6 +34,18 @@
       <button data-category="pull">Pulls</button>
       <button data-category="baskets">Baskets</button>
     </nav>
+    <form id="search" class="search" role="search">
+      <input name="q" type="search" placeholder="Rechercher (ex. marinière, cuir…)" aria-label="Rechercher">
+      <input name="min_price" type="number" min="0" placeholder="Prix min" aria-label="Prix minimum">
+      <input name="max_price" type="number" min="0" placeholder="Prix max" aria-label="Prix maximum">
+      <label class="check"><input name="in_stock" type="checkbox" value="1"> En stock</label>
+      <select name="sort" aria-label="Trier">
+        <option value="">Tri par défaut</option><option value="price">Prix croissant</option>
+        <option value="-price">Prix décroissant</option><option value="rating">Mieux notés</option>
+        <option value="name">Nom</option>
+      </select>
+      <button class="secondary" type="submit">Filtrer</button>
+    </form>
 
     <p id="catalog-error" class="error" hidden></p>
     <section id="catalog" class="grid" aria-live="polite"></section>
@@ -52,14 +68,25 @@
     </div>
     <ul id="cart-lines" class="cart-lines"></ul>
     <p id="cart-empty" class="muted">Votre panier est vide.</p>
+    <p id="cart-hold" class="muted" hidden></p>
+    <p id="cart-error" class="error" hidden></p>
     <div class="cart-total">Total <strong id="cart-total">0,00 €</strong></div>
     <form id="checkout" class="checkout">
       <label>Nom <input name="name" required maxlength="100" autocomplete="name"></label>
       <label>E-mail <input name="email" type="email" required autocomplete="email"></label>
-      <button type="submit" class="primary" id="checkout-submit">Commander</button>
+      <label>Adresse de livraison <input name="address" maxlength="200" autocomplete="street-address"></label>
+      <label>Livraison <select name="shipping_method" id="shipping-method">
+        <option value="standard">Standard (3 à 5 jours)</option>
+        <option value="express">Express (24 h)</option>
+      </select></label>
+      <label>Code promo <input name="promo_code" maxlength="20" autocomplete="off"></label>
+      <p class="muted" id="shipping-note"></p>
+      <button type="submit" class="primary" id="checkout-submit">Commander et payer</button>
       <p id="checkout-error" class="error" hidden></p>
     </form>
   </aside>
+
+  <p id="toast" class="toast" role="status" hidden></p>
 
   <section id="tracking" class="tracking" hidden>
     <div class="tracking-card">
@@ -67,15 +94,98 @@
       <h2>Commande <span id="tracking-id"></span></h2>
       <p class="muted" id="tracking-summary"></p>
       <ol class="timeline" id="timeline">
-        <li data-status="CONFIRMED"><b>Confirmée</b><span></span></li>
+        <li data-status="CONFIRMED"><b>Payée</b><span></span></li>
         <li data-status="PACKED"><b>Emballée</b><span></span></li>
         <li data-status="SHIPPED"><b>Expédiée</b><span></span></li>
+        <li data-status="IN_TRANSIT"><b>En transit</b><span></span></li>
+        <li data-status="DELIVERED"><b>Livrée</b><span></span></li>
       </ol>
       <p id="tracking-shipping" class="shipping" hidden></p>
+      <p id="tracking-cancelled" class="error" hidden>Commande annulée : les articles ont été remis en stock.</p>
+      <p id="tracking-pending" class="muted" hidden>En attente de paiement : les articles vous sont réservés.</p>
+      <p id="tracking-return" class="shipping" hidden></p>
+      <div id="return-form" class="row" hidden>
+        <label>Motif du retour
+          <select id="return-reason">
+            <option value="size">Taille ne convient pas</option>
+            <option value="changed_mind">Changement d'avis</option>
+            <option value="defective">Article défectueux</option>
+            <option value="other">Autre</option>
+          </select></label>
+        <button id="tracking-return-btn" class="secondary">Retourner la commande</button>
+      </div>
+      <div class="row">
+        <button id="tracking-pay" class="primary" hidden>Payer</button>
+        <button id="tracking-invoice" class="secondary" hidden>Facture (PDF)</button>
+        <button id="tracking-cancel" class="secondary" hidden>Annuler la commande</button>
+      </div>
+      <p id="tracking-error" class="error" hidden></p>
     </div>
   </section>
 
+  <dialog id="login-dialog" class="dialog">
+    <form id="login-form" method="dialog">
+      <h2 id="login-title">Connexion</h2>
+      <label>E-mail <input name="username" type="email" required autocomplete="username"></label>
+      <label>Mot de passe <input name="password" type="password" required minlength="8" autocomplete="current-password"></label>
+      <label id="login-name" hidden>Nom <input name="name" maxlength="60" autocomplete="name"></label>
+      <label id="login-code" hidden>Code reçu par e-mail <input name="code" autocomplete="one-time-code"></label>
+      <p id="login-error" class="error" hidden></p>
+      <div class="row">
+        <button class="primary" type="submit" id="login-submit">Se connecter</button>
+        <button class="secondary" type="button" id="login-switch">Créer un compte</button>
+        <button class="secondary" type="button" id="login-cancel">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="account" class="dialog wide">
+    <div class="drawer-head">
+      <h2>Mon compte <small id="account-name" class="muted"></small></h2>
+      <button id="account-close" class="icon" aria-label="Fermer">✕</button>
+    </div>
+    <h3>Alertes</h3>
+    <ul id="notifications" class="plain"></ul>
+    <h3>Liste de souhaits</h3>
+    <ul id="wishlist" class="plain"></ul>
+    <h3>Mes commandes</h3>
+    <ul id="my-orders" class="plain"></ul>
+    <button id="logout" class="secondary">Se déconnecter</button>
+  </dialog>
+
+  <dialog id="reviews" class="dialog wide">
+    <div class="drawer-head">
+      <h2>Avis : <span id="reviews-product"></span></h2>
+      <button id="reviews-close" class="icon" aria-label="Fermer">✕</button>
+    </div>
+    <ul id="reviews-list" class="plain"></ul>
+    <form id="review-form" class="row">
+      <label>Note <select name="rating"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select></label>
+      <label class="grow">Commentaire <input name="comment" maxlength="1000"></label>
+      <button class="primary" type="submit">Publier</button>
+    </form>
+    <p id="review-status" class="status"></p>
+  </dialog>
+
+  <dialog id="pay-dialog" class="dialog">
+    <h2>Paiement <small id="pay-amount" class="muted"></small></h2>
+    <!-- Stripe.js (AWS) : formulaire de carte de Stripe, la carte ne passe jamais par nos serveurs. -->
+    <div id="pay-element"></div>
+    <!-- Faux Stripe local : cartes de test sans saisie. -->
+    <div id="pay-local" class="row" hidden>
+      <button class="primary" type="button" data-card="pm_card_visa">Carte de test 4242 (acceptée)</button>
+      <button class="secondary" type="button" data-card="pm_card_chargeDeclined">Carte refusée</button>
+    </div>
+    <p class="muted" id="pay-hint"></p>
+    <p id="pay-error" class="error" hidden></p>
+    <div class="row">
+      <button class="primary" type="button" id="pay-submit">Payer</button>
+      <button class="secondary" type="button" id="pay-cancel">Plus tard</button>
+    </div>
+  </dialog>
+
   <div id="backdrop" class="backdrop" hidden></div>
+  <script src="auth.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

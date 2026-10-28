@@ -76,9 +76,20 @@ variable "route53_zone_name" {
 # ---------------------------------------------------------------------------
 
 variable "notification_email" {
-  description = "Adresse qui reçoit les confirmations de commande, les alarmes et l'alerte budget (il faut confirmer l'abonnement SNS reçu par mail). Vide = pas d'e-mail."
+  description = "Expéditeur et destinataire des e-mails SES (sandbox), des alarmes et de l'alerte budget. Identité SES vérifiée une fois hors Terraform (README) ; confirmer l'abonnement SNS reçu par mail. Vide = pas d'e-mail."
   type        = string
   default     = ""
+}
+
+variable "demo_admin_email" {
+  description = "Compte admin de démonstration, créé dans Cognito par up.sh (scripts/create_demo_admin.sh) avec un mot de passe aléatoire affiché une seule fois, jamais dans l'état. Vide = aucun compte."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.demo_admin_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.demo_admin_email))
+    error_message = "demo_admin_email doit être vide ou une adresse e-mail valide."
+  }
 }
 
 variable "monthly_budget_usd" {
@@ -143,4 +154,49 @@ variable "fulfillment_delay_seconds" {
   description = "Délai simulé entre chaque étape de traitement (préparation, expédition)."
   type        = number
   default     = 5
+}
+
+# Paiement (lot 3). "stripe" (par défaut) : paiement par carte avec Stripe en mode test,
+# les deux clés ci-dessous sont alors obligatoires (terraform plan échoue sans elles).
+# "simulated" : sans compte Stripe, chaque commande est confirmée aussitôt (paiement
+# simulé, choisi explicitement : jamais par défaut quand une clé manque).
+variable "payment_mode" {
+  description = "Mode de paiement : \"stripe\" (carte, mode test Stripe) ou \"simulated\" (sans compte Stripe)."
+  type        = string
+  default     = "stripe"
+
+  validation {
+    condition     = contains(["stripe", "simulated"], var.payment_mode)
+    error_message = "payment_mode doit valoir \"stripe\" ou \"simulated\"."
+  }
+
+  validation {
+    condition     = var.payment_mode != "stripe" || (var.stripe_publishable_key != "" && var.stripe_secret_key != "")
+    error_message = "payment_mode = \"stripe\" exige stripe_publishable_key (pk_test_...) et stripe_secret_key (sk_test_...) dans terraform.tfvars. Sans compte Stripe, choisir payment_mode = \"simulated\"."
+  }
+}
+
+# Clés Stripe, mode test uniquement. À renseigner dans terraform.tfvars (ignoré par
+# git) ; la clé secrète part dans SSM Parameter Store (SecureString), jamais dans le code.
+variable "stripe_publishable_key" {
+  description = "Clé publiable Stripe de TEST (pk_test_...), envoyée au navigateur."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.stripe_publishable_key == "" || startswith(var.stripe_publishable_key, "pk_test_")
+    error_message = "Seules les clés de test sont acceptées : stripe_publishable_key doit commencer par pk_test_."
+  }
+}
+
+variable "stripe_secret_key" {
+  description = "Clé secrète Stripe de TEST (sk_test_...), lue par l'API dans SSM."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.stripe_secret_key == "" || startswith(var.stripe_secret_key, "sk_test_")
+    error_message = "Seules les clés de test sont acceptées : stripe_secret_key doit commencer par sk_test_."
+  }
 }

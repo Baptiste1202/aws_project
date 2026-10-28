@@ -1,0 +1,26 @@
+━━ k6 : serverless (https://d1y8q2suk60lrx.cloudfront.net), 8 utilisateurs virtuels, 60s
+
+serverless : 1068 requêtes, 13.8 req/s, p95 272 ms, réponses attendues 100.0 %, 429 : 0, 5xx : 0
+━━ k6 : vm (https://dny62p9rtoly0.cloudfront.net), 8 utilisateurs virtuels, 60s
+
+vm : 1110 requêtes, 14.5 req/s, p95 241 ms, réponses attendues 100.0 %, 429 : 0, 5xx : 0
+━━ k6 : hybrid (https://d3juzwwn3ao56.cloudfront.net), 8 utilisateurs virtuels, 60s
+
+hybrid : 1074 requêtes, 14.1 req/s, p95 251 ms, réponses attendues 100.0 %, 429 : 0, 5xx : 0
+
+Test de charge k6 (aws) : 8 utilisateurs virtuels, 60s à charge pleine (+ 10 s de montée), parcours de lecture.
+
+| Solution | Requêtes | Req/s | Médiane | p95 | Max | Réponses attendues | 429 (quota Lambda) | 5xx |
+|---|---|---|---|---|---|---|---|---|
+| serverless | 1068 | 13.8 | 52 ms | 272 ms | 514 ms | 100.0 % | 0 | 0 |
+| vm | 1110 | 14.5 | 56 ms | 241 ms | 390 ms | 100.0 % | 0 | 0 |
+| hybrid | 1074 | 14.1 | 47 ms | 251 ms | 1110 ms | 100.0 % | 0 | 0 |
+
+p95 par page (ms) :
+
+| Solution | catalogue | recherche | fiche | avis | suivi | sante |
+|---|---|---|---|---|---|---|
+| serverless | 309 | 332 | 193 | 162 | 225 | 153 |
+| vm | 266 | 251 | 261 | 199 | 257 | 101 |
+| hybrid | 303 | 321 | 163 | 155 | 158 | 156 |
+

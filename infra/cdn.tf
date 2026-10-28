@@ -4,6 +4,7 @@
 #   VM         : /*  -> ALB -> EC2 (sert le site et l'API)
 #   Hybride    : /*  -> S3  |  /api/orders (POST) -> ALB -> EC2 + RDS
 #                /api/* (catalogue, suivi) -> Lambda hybrid-read + DynamoDB
+#   Toutes      : /images/* -> S3 (bucket images, miniatures des produits, OAC)
 # ---------------------------------------------------------------------------
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -85,6 +86,12 @@ resource "aws_cloudfront_distribution" "serverless" {
     }
   }
 
+  origin {
+    origin_id                = "s3-images"
+    domain_name              = aws_s3_bucket.images.bucket_regional_domain_name
+    origin_access_control_id = aws_cloudfront_origin_access_control.images.id
+  }
+
   default_cache_behavior {
     target_origin_id           = "s3-web"
     viewer_protocol_policy     = "redirect-to-https"
@@ -104,6 +111,18 @@ resource "aws_cloudfront_distribution" "serverless" {
     compress                   = true
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_except_host.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
+  }
+
+  # Miniatures des images produit (bucket images, media.tf).
+  ordered_cache_behavior {
+    path_pattern               = "/images/*"
+    target_origin_id           = "s3-images"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = false
+    cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
   }
 
@@ -147,6 +166,12 @@ resource "aws_cloudfront_distribution" "vm" {
     }
   }
 
+  origin {
+    origin_id                = "s3-images"
+    domain_name              = aws_s3_bucket.images.bucket_regional_domain_name
+    origin_access_control_id = aws_cloudfront_origin_access_control.images.id
+  }
+
   default_cache_behavior {
     target_origin_id           = "alb"
     viewer_protocol_policy     = "redirect-to-https"
@@ -155,6 +180,18 @@ resource "aws_cloudfront_distribution" "vm" {
     compress                   = true
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
+  }
+
+  # Miniatures des images produit (bucket images, media.tf).
+  ordered_cache_behavior {
+    path_pattern               = "/images/*"
+    target_origin_id           = "s3-images"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = false
+    cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
   }
 

@@ -1,68 +1,58 @@
-# Événements archivés dans s3://threadly-dev-audit-bdf555/events/ : 291 fichiers
-
-Répartition par solution (source) et type :
-  hybrid     ORDER_CREATED  47
-  hybrid     ORDER_PACKED   47
-  hybrid     ORDER_SHIPPED  47
-  serverless ORDER_CREATED  18
-  serverless ORDER_PACKED   18
-  serverless ORDER_SHIPPED  18
-  vm         ORDER_CREATED  32
-  vm         ORDER_PACKED   32
-  vm         ORDER_SHIPPED  32
-
-# Exemple : aws s3 cp s3://threadly-dev-audit-bdf555/events/event_type=ORDER_CREATED/date=2026-10-27/8b775f75-cc60-4aea-839f-15c032ab0c3b.json -
-# (ORDER_CREATED de la solution hybride : porte le stock RDS et sa version pour la projection)
+Exemple : s3://threadly-dev-audit-0feca9/events/event_type=ORDER_PAID/date=2026-10-28/0632a378-e2b2-482e-8aa5-c61e5122ecb8.json
 
 {
-    "event_id": "8b775f75-cc60-4aea-839f-15c032ab0c3b",
-    "event_type": "ORDER_CREATED",
-    "occurred_at": "2026-10-27T13:39:57+00:00",
-    "source": "hybrid",
-    "order": {
-        "order_id": "ORD-8B0DFF2BDA",
+  "event_id": "0632a378-e2b2-482e-8aa5-c61e5122ecb8",
+  "event_type": "ORDER_PAID",
+  "occurred_at": "2026-10-28T10:40:19+00:00",
+  "source": "serverless",
+  "order": {
+    "status": "CONFIRMED",
+    "payment_deadline": "2026-10-28T10:55:17+00:00",
+    "updated_at": "2026-10-28T10:40:19+00:00",
+    "user_id": null,
+    "subtotal": 40,
+    "created_at": "2026-10-28T10:40:17+00:00",
+    "items": [
+      {
+        "name": "Produit de test ZZ-258234543",
+        "quantity": 1,
+        "size": "M",
+        "unit_price": 40,
+        "product_id": "ZZ-258234543"
+      }
+    ],
+    "history": [
+      {
+        "status": "PENDING_PAYMENT",
+        "at": "2026-10-28T10:40:17+00:00"
+      },
+      {
         "status": "CONFIRMED",
-        "customer": {
-            "name": "Démo Threadly",
-            "email": "demo@example.com"
-        },
-        "items": [
-            {
-                "product_id": "TS-003",
-                "name": "T-shirt Marinière",
-                "size": "XS",
-                "quantity": 1,
-                "unit_price": 34.9
-            },
-            {
-                "product_id": "BK-001",
-                "name": "Baskets Court Classic",
-                "size": "38",
-                "quantity": 1,
-                "unit_price": 119
-            }
-        ],
-        "total": 153.9,
-        "created_at": "2026-10-27T13:39:57+00:00",
-        "updated_at": "2026-10-27T13:39:57+00:00",
-        "history": [
-            {
-                "status": "CONFIRMED",
-                "at": "2026-10-27T13:39:57+00:00"
-            }
-        ],
-        "backend": "hybrid"
+        "at": "2026-10-28T10:40:19+00:00"
+      }
+    ],
+    "allocations": [
+      {
+        "warehouse": "PAR",
+        "product_id": "ZZ-258234543",
+        "quantity": 1
+      }
+    ],
+    "promo_code": null,
+    "order_id": "ORD-5AC0953F9E",
+    "shipping_method": "standard",
+    "payment": {
+      "intent_id": "pi_3UVUHG881Bly0rjl135TkEzS",
+      "provider": "stripe",
+      "status": "succeeded"
     },
-    "stock": [
-        {
-            "product_id": "TS-003",
-            "stock": 30,
-            "version": 15
-        },
-        {
-            "product_id": "BK-001",
-            "stock": 49,
-            "version": 1
-        }
-    ]
+    "customer": {
+      "name": "Scénario stock",
+      "email": "test@example.com"
+    },
+    "shipping_fee": 4.9,
+    "total": 44.9,
+    "backend": "serverless",
+    "discount": 0
+  }
 }

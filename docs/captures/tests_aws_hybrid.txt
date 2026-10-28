@@ -1,0 +1,285 @@
+
+━━ Boutique : https://d3juzwwn3ao56.cloudfront.net (mode aws)
+   Backend : hybrid (eu-west-3), paiement stripe, traitement step-functions
+
+━━ 1. Afficher le catalogue
+   BK-001  baskets  Baskets Court Classic            119 €  stock  50
+   BK-002  baskets  Baskets Runner Rétro              99 €  stock  35
+   BK-003  baskets  Baskets Montantes Urban           89 €  stock  30
+   BK-004  baskets  Baskets Trail Graphite           129 €  stock  21
+   PU-001  pull     Pull Col Rond Mérinos             79 €  stock  40
+   PU-002  pull     Pull Camionneur                   89 €  stock  25
+   PU-003  pull     Sweat à capuche Atelier           59 €  stock  70
+   PU-004  pull     Cardigan Torsadé                  95 €  stock  20
+   TS-001  tshirt   T-shirt Essentiel               19.9 €  stock 118
+   TS-002  tshirt   T-shirt Oversize Nuit           29.9 €  stock  79
+   TS-003  tshirt   T-shirt Marinière               34.9 €  stock  44
+   TS-004  tshirt   T-shirt Terracotta              24.9 €  stock  60
+   ZM-261353061 pull     Produit client ZM-261353061       40 €  stock   2
+   ZM-321640814 pull     Produit client ZM-321640814       40 €  stock   2
+   ZM-943745687 pull     Produit client ZM-943745687       40 €  stock   2
+   ZX-019532179 pull     Produit client ZX-019532179       35 €  stock   1
+   ZX-021996514 pull     Produit client ZX-021996514       20 €  stock  24
+   ZX-030244769 pull     Produit client ZX-030244769       25 €  stock  24
+   ZX-112210312 pull     Produit client ZX-112210312       40 €  stock   5
+   ZX-114216147 pull     Produit client ZX-114216147       40 €  stock   3
+   ZX-146853524 pull     Produit client ZX-146853524       30 €  stock   3
+   ZX-179891988 pull     Produit client ZX-179891988       25 €  stock   0
+   ZX-325193955 pull     Produit client ZX-325193955       45 €  stock   1
+   ZX-534139073 pull     Produit client ZX-534139073       40 €  stock  24
+   ZX-537922392 pull     Produit client ZX-537922392       30 €  stock   2
+   ZX-539737819 pull     Produit client ZX-539737819       30 €  stock   1
+   ZX-616308596 pull     Produit client ZX-616308596       40 €  stock  26
+   ZX-632315446 pull     Produit client ZX-632315446       45 €  stock   2
+   ZX-696582315 pull     Produit client ZX-696582315       40 €  stock   2
+   ZX-768558666 pull     Produit client ZX-768558666       50 €  stock   6
+   ZX-801418197 pull     Produit client ZX-801418197       15 €  stock   5
+   ZX-822030309 pull     Produit client ZX-822030309       25 €  stock   3
+   ZX-911620755 pull     Produit client ZX-911620755       30 €  stock   3
+   ZZ-026822657 tshirt   Produit de test ZZ-026822657      40 €  stock  23
+   ZZ-161622749 tshirt   Produit de test ZZ-161622749      40 €  stock   6
+   ZZ-177252753 tshirt   Produit de test ZZ-177252753      40 €  stock   1
+   ZZ-499945126 tshirt   Produit modifié                 42.5 €  stock   3
+   ZZ-648661214 tshirt   Produit de test ZZ-648661214      40 €  stock   6
+   ZZ-725173658 tshirt   Produit de test ZZ-725173658      40 €  stock   1
+   ZZ-749600980 tshirt   Produit de test ZZ-749600980    33.3 €  stock   7
+   ZZ-787540189 tshirt   Produit de test ZZ-787540189      40 €  stock   9
+   ZZ-936382353 tshirt   Produit de test ZZ-936382353      40 €  stock   4
+   ✅ 42 produits renvoyés par GET /api/products
+
+━━ 2. Commande de plusieurs produits, payée, suivie jusqu'à DELIVERED
+   Commande : 2 × TS-001 (taille XS) + 1 × TS-002 (taille S)
+   ORD-1AD77C13EA créée : PENDING_PAYMENT, total 69.7 € (dont livraison 0 €)
+   Payée (stripe) : CONFIRMED
+   +2 s : PACKED
+   +7 s : SHIPPED
+   +12 s : IN_TRANSIT
+   +17 s : DELIVERED
+   Expédiée : Mondial Relay FRF4DC18B43A0F
+   Stock : TS-001 118 → 116, TS-002 79 → 78
+   ✅ payée → PACKED → SHIPPED → IN_TRANSIT → DELIVERED en 18 s (step-functions), stock décrémenté
+
+━━ 3. Commande refusée pour stock insuffisant (409)
+   Demande de 2 × ZX-019532179 alors que le stock est de 1
+   Réponse : Stock insuffisant pour : ZX-019532179
+   ✅ 409 renvoyé, stock de ZX-019532179 inchangé (1)
+
+━━ 4. Commandes simultanées : le stock ne devient jamais négatif
+   6 commandes simultanées de 1 × ZX-019532179 (stock 1, demande totale 6)
+   Acceptées (201) : 1, refusées (409) : 5, limitées par Lambda : 0, autres : 0
+   Stock final : 0 (attendu 1 - 1 × 1 = 0)
+   ✅ 1/6 acceptées, stock final 0 ≥ 0 et cohérent
+
+━━ 5. Fichiers d'audit dans S3
+   Derniers fichiers de s3://threadly-dev-audit-0feca9/events/ :
+     2026-10-28 11:53:35       1439 events/event_type=ORDER_IN_TRANSIT/date=2026-10-28/9f023ba2-6d30-443e-871a-957bd06ad78d.json
+     2026-10-28 11:53:35       1443 events/event_type=ORDER_IN_TRANSIT/date=2026-10-28/f50bee02-d953-4b4c-a3e5-4d917c1760db.json
+     2026-10-28 11:53:41       1497 events/event_type=ORDER_DELIVERED/date=2026-10-28/41f6b3ad-d6c2-4b36-8d3a-c454547ab197.json
+     2026-10-28 11:53:41       1501 events/event_type=ORDER_DELIVERED/date=2026-10-28/5a90d2de-df1d-4392-9507-563a22c43f5a.json
+     2026-10-28 11:53:44       1354 events/event_type=ORDER_CREATED/date=2026-10-28/db8443f6-678a-4f59-ac04-6f5a02ae20a1.json
+     2026-10-28 11:53:44       1362 events/event_type=ORDER_CREATED/date=2026-10-28/bcfd8a5c-b6ae-4e35-8e1f-a18276d460e9.json
+   ✅ les 6 événements de ORD-1AD77C13EA sont archivés (ORDER_CREATED ORDER_DELIVERED ORDER_IN_TRANSIT ORDER_PACKED ORDER_PAID ORDER_SHIPPED )
+
+━━ 6. Back-office : accès, CRUD produit, archivage
+   sans jeton ou avec un jeton invalide : 401
+   ZZ-780603097 créé puis modifié (prix 42,5 €)
+   archivé : absent du catalogue public, commande refusée (400)
+   ✅ CRUD, archivage et désarchivage corrects ; administration protégée
+
+━━ 7. Multi-entrepôts : commande servie par Paris puis Lyon
+   4 unités : {'PAR': 3, 'LYS': 1} ; stock restant {'LYS': 1, 'PAR': 0}
+   ✅ répartition Paris → Lyon et stock par entrepôt corrects
+
+━━ 8. Journal des mouvements : réappro, casse, inventaire, vente
+   journal : RESTOCK +10 → 10, BREAKAGE -2 → 8, INVENTORY -1 → 7, RESTOCK +5 → 12, SALE -3 → 9
+   ✅ 5 mouvements dans l'ordre, casse au-delà du stock refusée (409)
+
+━━ 9. Annulation : stock remis, impossible une fois expédiée
+   ORD-AC04B7B64C annulée, stock remis à 5, seconde annulation refusée (409)
+   ORD-7FC4BB3060 expédiée : annulation refusée (409) ; ORD-AC04B7B64C reste CANCELLED (le traitement l'ignore)
+   ✅ annulation et remise en stock correctes
+
+━━ 10. Réservations : panier, commande, libération, expiration
+   3/3 réservées : autre commande et autre panier refusés (409)
+   commande de 2 depuis le panier : la 3e unité réservée est libérée
+   réservation de 10 s libérée par la purge après 52 s
+   ✅ réservation, commande depuis le panier, libération et expiration correctes
+
+━━ 11. Réservations simultanées : jamais plus que le stock
+   9 demandes simultanées pour 6 unités : 6 acceptées, 3 refusées
+   ✅ 6 réservées ≤ 6, disponible et réservé cohérents
+
+━━ 12. Alerte stock bas (SNS → audit S3)
+   STOCK_LOW publié sur SNS et archivé : 4 < seuil 5
+   une seule alerte au franchissement du seuil (pas à chaque vente)
+   ✅ alerte publiée une fois, liste des stocks bas à jour
+
+━━ 13. Import / export CSV du catalogue via S3
+   export : 51 produits, lien présigné valable 300 s
+   import : ZZ-514533042 mis à jour (prix 33,3 €, stock Paris 7), ZY-665858933 créé (4 + 1)
+   ✅ aller-retour CSV via S3 correct
+
+━━ 14. Valorisation du stock
+   ZZ-969919301 : 6 × 20 € = 120.00 € ; stock total 20555.38 € (Paris 15317.77 €, Lyon 5237.61 €)
+   ✅ valeur par produit, par entrepôt et totale cohérentes
+
+━━ 15. Comptes et rôles ; jetons forgés refusés
+   fournisseur d'identité : cognito
+   client 403 sur l'admin ; magasinier : stock oui, catalogue et promos non (403) ; admin : tout
+   6 jetons forgés refusés (401), dont un jeton du fournisseur local
+   infra/ ne référence ni auth-local, ni ALLOW_LOCAL_AUTH : non déployable sur AWS
+   ✅ droits par rôle corrects ; seuls les jetons de l'émetteur configuré sont acceptés
+
+━━ 16. Recherche et filtres du catalogue
+   catégorie : 4 baskets ; « marinière » : TS-003 ; ≤ 30 € : 12 produits triés
+   ✅ recherche texte, catégorie, prix, disponibilité et tris corrects
+
+━━ 17. Codes promo : remise, limite d'utilisation, expiration
+   DIX339159086 (10 %) : 100 € → remise 10 € → 90 €
+   épuisé après 2 utilisations, expiré et inconnu refusés (409)
+   code à usage unique, 4 commandes simultanées : 1 acceptée, réponses [201, 409, 409, 409]
+   ✅ remises, limites, expiration et concurrence corrects
+
+━━ 18. Avis clients (réservés aux acheteurs)
+   anonyme 401, sans achat 403, note invalide 400 ; avis remplacé : moyenne 2,0 sur 1 avis
+   ✅ avis réservés aux acheteurs, moyenne tenue à jour
+
+━━ 19. Liste de souhaits et alerte de retour en stock
+   « Produit client ZX-438790758 est de nouveau disponible. » : une seule alerte, au retour en stock
+   ✅ souhait, alerte unique au retour en stock, retrait
+
+━━ 20. Commandes du client connecté
+   ORD-9C9C773B64 visible par son client, pas par un autre
+   ✅ chaque client ne voit que ses commandes
+
+━━ 21. Image produit : dépôt présigné et miniatures WebP
+   original PNG 108 Ko déposé dans S3 (originals/ZM-456835504/ce45b3abf7cb4df5897897a8731d7786.png), rattaché à ZM-456835504
+   miniatures servies : 160 -> 160x107, 480 -> 480x320 (sous https://d3juzwwn3ao56.cloudfront.net/images)
+   faux PNG ignoré par la Lambda (aucune miniature)
+   original non public (GET /originals/ZM-456835504/ce45b3abf7cb4df5897897a8731d7786.png : 403 sans contenu)
+   ✅ formulaire présigné réservé à l'admin, miniatures 160 et 480 px, faux fichier ignoré
+
+━━ 22. Suivi en temps réel (API Gateway WebSocket)
+   connexions refusées : jeton forgé (401), solution inconnue
+   ORD-833963624B : ORDER_PAID, ORDER_PACKED, ORDER_SHIPPED, ORDER_IN_TRANSIT, ORDER_DELIVERED reçus sans polling (transporteur Mondial Relay)
+   alerte poussée au client : « Produit client ZM-442868504 est de nouveau disponible. »
+   ✅ statuts de commande et alerte de retour en stock poussés ; jeton forgé refusé
+
+━━ 23. Paiement par carte (Stripe, mode test)
+   ORD-4158C8D0E1 : sans paiement 402, carte refusée par Stripe (card_declined), toujours PENDING_PAYMENT
+   carte 4242 acceptée : CONFIRMED ; seconde confirmation sans effet (PACKED)
+   ✅ 402 sans paiement, carte refusée, paiement unique et vérifié côté serveur
+
+━━ 24. Purge des impayés : relecture de Stripe avant d'annuler
+   ORD-11E016EE78 payée chez Stripe sans confirm-payment, ORD-9E43470CEF jamais payée (délai de paiement : 10 s)
+   purge : ORD-11E016EE78 confirmée (PACKED), ORD-9E43470CEF annulée
+   stock de l'impayée rendu (3 disponibles) ; son PaymentIntent est annulé chez Stripe (paiement refusé)
+   ✅ payée mais non confirmée : confirmée ; impayée : PaymentIntent puis commande annulés
+
+━━ 25. Frais de port
+   1 x 40 € standard : frais 4.90 €, total 44.9 €
+   2 x 40 € standard : frais 0.00 €, total 80 €
+   1 x 40 € express : frais 9.90 €, total 49.9 €
+   2 x 40 € standard − 40 € (promo) : frais 4.90 €, total 44.9 €
+   ✅ standard 4,90 € (offerte dès 60 € après remise), express 9,90 €, mode inconnu refusé
+
+━━ 26. Workflow de livraison jusqu'à DELIVERED ; annulation payée remboursée
+   ORD-0500398DED (step-functions) : PENDING_PAYMENT → CONFIRMED → PACKED → SHIPPED → IN_TRANSIT → DELIVERED ; Chronopost FR85E5CEDA806E
+   ORD-8FFDA2A8E5 payée puis annulée : remboursée (re_3UVUaA881Bly0rjl19LAAyIn), reste CANCELLED
+   ✅ 5 étapes par step-functions, annulation d'une commande payée remboursée une fois
+
+━━ 27. Facture PDF
+   ORD-4418F593FD : PDF 2024 octets (application/pdf), lien présigné 300 s ; anonyme 401, impayée 409, autre client 403, admin 200
+   ✅ facture réservée au client de la commande (et à l'admin), une fois payée
+
+━━ 28. E-mails (SES) : confirmation avec facture, expédition, livraison, retour en stock
+   3 e-mails envoyés par SES pour ORD-8157919532 (journaux de la Lambda mailer)
+   ZX-166363223 souhaité par le client puis réapprovisionné : e-mail « De retour en stock » envoyé par SES
+   ✅ confirmation (facture jointe), expédition, livraison et retour en stock envoyés par SES
+
+━━ 29. Retour d'une commande livrée : remise en stock et remboursement
+   ORD-7356AE62D5 livrée : anonyme 401, autre client 403, motif inconnu 400 ; demande acceptée (étiquette RT1322576A2C73), seconde demande 409
+   réceptionné par le magasinier : RETURNED, remboursé 34.90 € (re_3UVUbV881Bly0rjl0QQqxWl2) ; seconde réception 409
+   stock remis (3 disponibles), mouvement RETURN +1 réf. ORD-7356AE62D5, retiré de la liste des retours
+   e-mails « retour enregistré » (étiquette) et « remboursement » envoyés par SES
+   ✅ retour demandé par le client, réceptionné une fois : stock remis, remboursé une fois
+
+━━ 30. Retour refusé : commande non livrée, délai de 14 jours dépassé
+   ORD-127F0E18A8 (PACKED) : retour refusé, 409 « Retour impossible pour une commande PACKED (livrée seulement) »
+   livrée il y a 13 jours : acceptée (règle de shop/domain.py)
+   livrée il y a 15 jours : refusée (Délai de retour dépassé (14 jours après la livraison)) (règle de shop/domain.py)
+   ✅ seules les commandes livrées depuis moins de 14 jours peuvent être retournées
+
+━━ 31. Réappro fournisseur automatique sur stock bas, sans doublon
+   ZX-047302120 : casse 4, réappro manuel 5, casse 5 -> deux passages sous le seuil (5)
+   bon PO-1A1EBA1707 : 20 × Produit client ZX-047302120 chez Atelier Textile de Roubaix, entrepôt PAR
+   livré une fois : +20 (mouvement RESTOCK réf. PO-1A1EBA1707), stock 24 ; seconde alerte ignorée (un seul bon ouvert par produit) ; traitement : ec2-worker
+   ✅ bon de commande unique, livré après le délai fournisseur (ec2-worker)
+
+━━ 32. Tableau de bord du back-office
+   CA du jour 2655.3 → 2710.2 € (+ 54.90 € de ORD-BD4FFD4C2F), 7 jours 2710.2 € ; ZX-766742009 en stock bas, ZX-858799562 en rupture
+   top ventes : T-shirt Essentiel (4), Produit client ZX-420498268 (4), Produit client ZX-768558666 (4) ; statuts : {'CANCELLED': 32, 'DELIVERED': 43, 'PACKED': 1, 'PENDING_PAYMENT': 1, 'RETURNED': 2}
+   ✅ chiffre d'affaires, top ventes, ruptures, stocks bas et statuts ; anonyme 401, client 403
+
+━━ 33. Rapport quotidien CSV (S3 + SES), à la demande et par la cible du Scheduler
+   à la demande : reports/hybrid/rapport-hybrid-2026-10-28T110231Z.csv (72 produits, 72 vendus en 24 h), ZX-880504774 : 3 vendus, 45,00 €, ligne TOTAL
+   cible du Scheduler (Lambda threadly-dev-hybrid-reporter) : reports/hybrid/rapport-hybrid-2026-10-28T110234Z.csv
+   EventBridge Scheduler : cron(0 6 * * ? *) (Europe/Paris), ENABLED
+   2 e-mail(s) « Rapport quotidien hybrid » envoyé(s) par SES
+   ✅ CSV ventes / stock / valorisation dans S3, envoyé par SES ; réservé à l'admin
+
+━━ 34. Athena + Glue sur le bucket d'audit (requêtes nommées)
+   table threadly_dev_audit.events : partitions ['event_type', 'date'], projection activée
+   annulations : 3 ligne(s), hybrid : {'date': '2026-10-28', 'source': 'hybrid', 'annulations': '32', 'commandes': '80', 'taux_pct': '40.0'}
+   chiffre-affaires-par-jour : 3 ligne(s), hybrid : {'date': '2026-10-28', 'source': 'hybrid', 'encaisse': '3059.700000000002', 'rembourse': '299.6', 'chiffre_affaires': '2760.1000000000017'}
+   delai-commande-livraison : 3 ligne(s), hybrid : {'source': 'hybrid', 'commandes_livrees': '47', 'delai_moyen_s': '19.4'}
+   données lues au total : 953 Ko (facturé 10 Mo minimum par requête)
+   ✅ 3 requêtes nommées exécutées sur la table partitionnée (projection, sans crawler)
+
+━━ 35. Traces X-Ray des Lambdas et des machines Step Functions
+   Lambda threadly-dev-hybrid-read : 414 trace(s) sur les 50 dernières minutes
+   Step Functions threadly-dev-hybrid-fulfillment : exécution ORD-E188F51D17 tracée (Sampled=1), trace 1-6ae1d646-1ff5fede2e138e88997f6cd0 avec 4 étapes fulfillment reliées au processor
+   ✅ Lambdas tracées ; la trace traverse la machine Step Functions, étape par étape
+
+━━ 36. Grafana local : tableau de bord ventes et stock provisionné
+   ✅ sans objet sur AWS : Grafana fait partie de la stack Docker locale
+
+━━ Résumé
+   ✅ Catalogue
+   ✅ Commande payée jusqu'à DELIVERED
+   ✅ Stock insuffisant
+   ✅ Commandes simultanées
+   ✅ Audit S3
+   ✅ 6. Back-office : accès, CRUD produit, archivage
+   ✅ 7. Multi-entrepôts : commande servie par Paris puis Lyon
+   ✅ 8. Journal des mouvements : réappro, casse, inventaire, vente
+   ✅ 9. Annulation : stock remis, impossible une fois expédiée
+   ✅ 10. Réservations : panier, commande, libération, expiration
+   ✅ 11. Réservations simultanées : jamais plus que le stock
+   ✅ 12. Alerte stock bas (SNS → audit S3)
+   ✅ 13. Import / export CSV du catalogue via S3
+   ✅ 14. Valorisation du stock
+   ✅ 15. Comptes et rôles ; jetons forgés refusés
+   ✅ 16. Recherche et filtres du catalogue
+   ✅ 17. Codes promo : remise, limite d'utilisation, expiration
+   ✅ 18. Avis clients (réservés aux acheteurs)
+   ✅ 19. Liste de souhaits et alerte de retour en stock
+   ✅ 20. Commandes du client connecté
+   ✅ 21. Image produit : dépôt présigné et miniatures WebP
+   ✅ 22. Suivi en temps réel (API Gateway WebSocket)
+   ✅ 23. Paiement par carte (Stripe, mode test)
+   ✅ 24. Purge des impayés : relecture de Stripe avant d'annuler
+   ✅ 25. Frais de port
+   ✅ 26. Workflow de livraison jusqu'à DELIVERED ; annulation payée remboursée
+   ✅ 27. Facture PDF
+   ✅ 28. E-mails (SES) : confirmation avec facture, expédition, livraison, retour en stock
+   ✅ 29. Retour d'une commande livrée : remise en stock et remboursement
+   ✅ 30. Retour refusé : commande non livrée, délai de 14 jours dépassé
+   ✅ 31. Réappro fournisseur automatique sur stock bas, sans doublon
+   ✅ 32. Tableau de bord du back-office
+   ✅ 33. Rapport quotidien CSV (S3 + SES), à la demande et par la cible du Scheduler
+   ✅ 34. Athena + Glue sur le bucket d'audit (requêtes nommées)
+   ✅ 35. Traces X-Ray des Lambdas et des machines Step Functions
+   ✅ 36. Grafana local : tableau de bord ventes et stock provisionné
+
+   Tous les scénarios exécutés sont passés.

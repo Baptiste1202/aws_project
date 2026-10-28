@@ -1,0 +1,10 @@
+# Tableaux de bord provisionnés depuis local/grafana/dashboards (lecture seule dans l'UI).
+apiVersion: 1
+
+providers:
+  - name: threadly
+    folder: Threadly
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -7,3 +7,4 @@
 crash.log
 __pycache__/
 .idea/
+.DS_Store

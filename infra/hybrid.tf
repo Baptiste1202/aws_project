@@ -1,14 +1,27 @@
 # ---------------------------------------------------------------------------
 # Solution 3 : hybride. Chaque partie sur le service qui lui convient le mieux,
 # avec les ressources partagées avec les solutions 1 et 2 :
-#   /*            -> S3 (même bucket et même OAC que la solution serverless)
-#   /api/orders   -> ALB -> EC2 (service shop-hybrid, port 8081) -> RDS (base shop_hybrid)
-#                    écriture : transaction SQL, sans limite de concurrence Lambda
-#   /api/*        -> Lambda hybrid-read -> DynamoDB (catalogue, suivi des commandes)
-# RDS fait foi pour le stock et la création des commandes ; DynamoDB pour le statut.
-# Les événements SNS (source = hybrid) relient les deux (CQRS, cohérence à terme) :
-# voir messaging.tf (files hybrid-*) et lambda.tf (hybrid-processor, hybrid-projector).
+#   /*                       -> S3 (même bucket et même OAC que la solution serverless)
+#   /api/* en GET, HEAD      -> Lambda hybrid-read -> DynamoDB (lectures seulement)
+#   /api/* autres méthodes   -> ALB -> EC2 (service shop-hybrid, port 8081) -> RDS
+#                               (toutes les écritures : transactions SQL, sans limite
+#                               de concurrence Lambda)
+# Le choix de l'origine selon la méthode est fait par une CloudFront Function.
+# RDS fait foi pour le stock, les produits et la création des commandes ; DynamoDB pour
+# le statut des commandes. Les événements SNS (source = hybrid) relient les deux (CQRS,
+# cohérence à terme) : voir messaging.tf et lambda.tf (hybrid-processor, hybrid-projector).
 # ---------------------------------------------------------------------------
+
+# CloudFront Function (facturée à l'appel, 2 M d'appels gratuits par mois) : les
+# écritures sont envoyées à l'origine ALB, les lectures restent sur la Lambda.
+resource "aws_cloudfront_function" "hybrid_router" {
+  count   = var.deploy_hybrid ? 1 : 0
+  name    = "${local.name}-hybrid-router"
+  runtime = "cloudfront-js-2.0"
+  comment = "Hybride : écritures vers l'ALB (EC2 + RDS), lectures vers la Lambda"
+  publish = true
+  code    = file("${path.module}/templates/hybrid_router.js")
+}
 
 resource "aws_cloudfront_distribution" "hybrid" {
   count               = var.deploy_hybrid ? 1 : 0
@@ -64,6 +77,12 @@ resource "aws_cloudfront_distribution" "hybrid" {
     }
   }
 
+  origin {
+    origin_id                = "s3-images"
+    domain_name              = aws_s3_bucket.images.bucket_regional_domain_name
+    origin_access_control_id = aws_cloudfront_origin_access_control.images.id
+  }
+
   default_cache_behavior {
     target_origin_id           = "s3-web"
     viewer_protocol_policy     = "redirect-to-https"
@@ -74,20 +93,7 @@ resource "aws_cloudfront_distribution" "hybrid" {
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
   }
 
-  # Chemin exact (sans joker) : seule la création de commande va sur EC2 + RDS,
-  # le suivi /api/orders/{id} est servi par la Lambda (règle suivante).
-  ordered_cache_behavior {
-    path_pattern               = "/api/orders"
-    target_origin_id           = "alb"
-    viewer_protocol_policy     = "redirect-to-https"
-    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods             = ["GET", "HEAD"]
-    compress                   = true
-    cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
-    origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
-    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
-  }
-
+  # Origine par défaut : la Lambda de lecture ; la fonction bascule les écritures sur l'ALB.
   ordered_cache_behavior {
     path_pattern               = "/api/*"
     target_origin_id           = "lambda-read"
@@ -97,6 +103,23 @@ resource "aws_cloudfront_distribution" "hybrid" {
     compress                   = true
     cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_except_host.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.hybrid_router[0].arn
+    }
+  }
+
+  # Miniatures des images produit (bucket images, media.tf).
+  ordered_cache_behavior {
+    path_pattern               = "/images/*"
+    target_origin_id           = "s3-images"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = false
+    cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
     response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security.id
   }
 

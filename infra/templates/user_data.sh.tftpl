@@ -19,6 +19,8 @@ aws s3 cp "s3://${bucket}/web/" /opt/shop/static/ --recursive --region ${region}
 
 cat > /etc/${s.unit}.env <<'EOF'
 AWS_REGION=${region}
+# boto3 ne lit que AWS_DEFAULT_REGION pour les clients créés sans région (DynamoDB, S3).
+AWS_DEFAULT_REGION=${region}
 SHOP_SOURCE=${s.source}
 PORT=${s.port}
 STATIC_DIR=/opt/shop/static
@@ -29,6 +31,18 @@ DB_USER=${db_user}
 DB_PASSWORD_PARAM=${db_password_param}
 TOPIC_ARN=${topic_arn}
 QUEUE_URL=${s.queue_url}
+AUTH_ISSUER=${auth_issuer}
+AUTH_CLIENT_ID=${auth_client_id}
+DATA_BUCKET=${data_bucket}
+IMAGES_BUCKET=${images_bucket}
+IMAGES_URL=/images
+REALTIME_URL=${realtime_url}
+# Paiement Stripe : nom du paramètre SSM de la clé secrète (jamais la clé elle-même).
+%{ if stripe_secret_param != "" ~}
+STRIPE_PUBLISHABLE_KEY=${stripe_publishable_key}
+STRIPE_SECRET_PARAM=${stripe_secret_param}
+%{ endif ~}
+STATUS_TABLE=${s.status_table}
 %{ if s.source == "vm" ~}
 KAFKA_BOOTSTRAP=${kafka_bootstrap}
 KAFKA_QUEUE_URL=${kafka_queue_url}

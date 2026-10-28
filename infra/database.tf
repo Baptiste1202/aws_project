@@ -1,19 +1,65 @@
 # ---------------------------------------------------------------------------
-# DynamoDB (solution serverless) : capacité provisionnée faible pour rester
-# dans le Free Tier permanent (25 RCU / 25 WCU au total sur le compte).
+# DynamoDB : une table par solution (« single-table design », voir
+# src/shop/dynamo_store.py) : produits, stock par entrepôt, commandes, mouvements,
+# réservations. Clés pk / sk, index gsi1 (gsi1pk = type, gsi1sk = tri).
+#   shop   : solution serverless (fait foi)
+#   hybrid : modèle de lecture de la solution hybride (CQRS) : RDS fait foi pour le
+#            stock et les produits, la table est mise à jour par la Lambda projector ;
+#            le statut des commandes, lui, fait foi ici.
+# Facturation à la demande : avec l'index, la capacité provisionnée dépasserait les
+# 25 RCU/WCU gratuites et serait facturée à l'heure ; à la demande, on paie à la
+# requête (fractions de centime aux volumes du projet), jamais à l'heure.
 # ---------------------------------------------------------------------------
 
-resource "aws_dynamodb_table" "products" {
-  count          = var.deploy_serverless ? 1 : 0
-  name           = "${local.name}-products"
-  billing_mode   = "PROVISIONED"
-  read_capacity  = 5
-  write_capacity = 2
-  hash_key       = "id"
+locals {
+  dynamo_tables = merge(
+    var.deploy_serverless ? { shop = "${local.name}-shop" } : {},
+    var.deploy_hybrid ? { hybrid = "${local.name}-hybrid" } : {},
+  )
 
-  attribute {
-    name = "id"
-    type = "S"
+  # Catalogue initial (même règle que shop.domain : 2/3 Paris, 1/3 Lyon).
+  seed_products = { for p in local.products : p.id => p }
+  seed_stock = merge([for p in local.products : {
+    "${p.id}#PAR" = { product_id = p.id, warehouse = "PAR", on_hand = p.stock - floor(p.stock / 3) }
+    "${p.id}#LYS" = { product_id = p.id, warehouse = "LYS", on_hand = floor(p.stock / 3) }
+  }]...)
+}
+
+resource "aws_dynamodb_table" "main" {
+  for_each     = local.dynamo_tables
+  name         = each.value
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pk"
+  range_key    = "sk"
+
+  dynamic "attribute" {
+    for_each = ["pk", "sk", "gsi1pk", "gsi1sk"]
+    content {
+      name = attribute.value
+      type = "S"
+    }
+  }
+
+  global_secondary_index {
+    name            = "gsi1"
+    projection_type = "ALL"
+
+    key_schema {
+      attribute_name = "gsi1pk"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "gsi1sk"
+      key_type       = "RANGE"
+    }
+  }
+
+  # Les réservations expirées sont libérées par la purge ; le TTL supprime ensuite
+  # les éléments restants (le TTL seul ne rendrait pas le stock réservé).
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
   }
 
   server_side_encryption {
@@ -22,109 +68,59 @@ resource "aws_dynamodb_table" "products" {
   }
 }
 
-resource "aws_dynamodb_table" "orders" {
-  count          = var.deploy_serverless ? 1 : 0
-  name           = "${local.name}-orders"
-  billing_mode   = "PROVISIONED"
-  read_capacity  = 5
-  write_capacity = 5
-  hash_key       = "order_id"
-
-  attribute {
-    name = "order_id"
-    type = "S"
-  }
-
-  server_side_encryption {
-    enabled     = var.enable_kms_cmk
-    kms_key_arn = local.kms_key_arn
-  }
-}
-
-# Fausse base de données : le catalogue (t-shirts, pulls, baskets) est chargé
-# depuis data/products.json. Un `terraform apply` remet aussi le stock à zéro.
-resource "aws_dynamodb_table_item" "products" {
-  for_each   = var.deploy_serverless ? { for p in local.products : p.id => p } : {}
-  table_name = aws_dynamodb_table.products[0].name
-  hash_key   = aws_dynamodb_table.products[0].hash_key
+# Catalogue initial, écrit à la création de la table seulement (ignore_changes) :
+# ensuite, le stock évolue avec les ventes, les mouvements et les réservations, et le
+# remettre à zéro à chaque apply le rendrait incohérent avec le journal (et, en
+# hybride, avec RDS).
+resource "aws_dynamodb_table_item" "product" {
+  for_each   = { for pair in setproduct(keys(local.dynamo_tables), keys(local.seed_products)) : "${pair[0]}/${pair[1]}" => { table = pair[0], p = local.seed_products[pair[1]] } }
+  table_name = aws_dynamodb_table.main[each.value.table].name
+  hash_key   = "pk"
+  range_key  = "sk"
 
   item = jsonencode({
-    id          = { S = each.value.id }
-    category    = { S = each.value.category }
-    name        = { S = each.value.name }
-    description = { S = each.value.description }
-    price       = { N = tostring(each.value.price) } # forme normalisée par DynamoDB (19.9, 79) : pas de faux diff
-    color       = { S = each.value.color }
-    hex         = { S = each.value.hex }
-    sizes       = { L = [for s in each.value.sizes : { S = s }] }
-    stock       = { N = tostring(each.value.stock) }
+    pk                  = { S = "PRODUCT#${each.value.p.id}" }
+    sk                  = { S = "META" }
+    gsi1pk              = { S = "PRODUCT" }
+    gsi1sk              = { S = each.value.p.id }
+    entity              = { S = "PRODUCT" }
+    id                  = { S = each.value.p.id }
+    category            = { S = each.value.p.category }
+    name                = { S = each.value.p.name }
+    description         = { S = each.value.p.description }
+    price               = { N = tostring(each.value.p.price) }
+    cost_price          = { N = tostring(each.value.p.cost_price) }
+    low_stock_threshold = { N = tostring(each.value.p.low_stock_threshold) }
+    archived            = { BOOL = false }
+    color               = { S = each.value.p.color }
+    hex                 = { S = each.value.p.hex }
+    sizes               = { L = [for s in each.value.p.sizes : { S = s }] }
+    version             = { N = "0" }
   })
-}
 
-# ---------------------------------------------------------------------------
-# DynamoDB (solution hybride) : modèle de lecture (CQRS). RDS fait foi pour le
-# stock et la création des commandes ; ces tables sont mises à jour par les
-# événements (Lambda projector) et lues par la Lambda hybrid-read. Le statut
-# des commandes, lui, est géré ici par la Lambda hybrid-processor.
-# Avec les 3 solutions : 20 RCU / 14 WCU sur les 25 gratuites.
-# ---------------------------------------------------------------------------
-
-resource "aws_dynamodb_table" "hybrid_products" {
-  count          = var.deploy_hybrid ? 1 : 0
-  name           = "${local.name}-hybrid-products"
-  billing_mode   = "PROVISIONED"
-  read_capacity  = 5
-  write_capacity = 2
-  hash_key       = "id"
-
-  attribute {
-    name = "id"
-    type = "S"
-  }
-
-  server_side_encryption {
-    enabled     = var.enable_kms_cmk
-    kms_key_arn = local.kms_key_arn
+  lifecycle {
+    ignore_changes = [item]
   }
 }
 
-resource "aws_dynamodb_table" "hybrid_orders" {
-  count          = var.deploy_hybrid ? 1 : 0
-  name           = "${local.name}-hybrid-orders"
-  billing_mode   = "PROVISIONED"
-  read_capacity  = 5
-  write_capacity = 5
-  hash_key       = "order_id"
-
-  attribute {
-    name = "order_id"
-    type = "S"
-  }
-
-  server_side_encryption {
-    enabled     = var.enable_kms_cmk
-    kms_key_arn = local.kms_key_arn
-  }
-}
-
-# Même catalogue initial que la base shop_hybrid (chargée par l'EC2 au démarrage).
-# ignore_changes : le stock est ensuite piloté par la projection, un nouvel apply
-# ne doit pas le remettre à zéro sans RDS (les deux divergeraient).
-resource "aws_dynamodb_table_item" "hybrid_products" {
-  for_each   = var.deploy_hybrid ? { for p in local.products : p.id => p } : {}
-  table_name = aws_dynamodb_table.hybrid_products[0].name
-  hash_key   = aws_dynamodb_table.hybrid_products[0].hash_key
+resource "aws_dynamodb_table_item" "stock" {
+  for_each   = { for pair in setproduct(keys(local.dynamo_tables), keys(local.seed_stock)) : "${pair[0]}/${pair[1]}" => { table = pair[0], s = local.seed_stock[pair[1]] } }
+  table_name = aws_dynamodb_table.main[each.value.table].name
+  hash_key   = "pk"
+  range_key  = "sk"
 
   item = jsonencode({
-    id          = { S = each.value.id }
-    category    = { S = each.value.category }
-    name        = { S = each.value.name }
-    description = { S = each.value.description }
-    price       = { N = tostring(each.value.price) }
-    color       = { S = each.value.color }
-    hex         = { S = each.value.hex }
-    sizes       = { L = [for s in each.value.sizes : { S = s }] }
-    stock       = { N = tostring(each.value.stock) }
+    pk         = { S = "PRODUCT#${each.value.s.product_id}" }
+    sk         = { S = "STOCK#${each.value.s.warehouse}" }
+    gsi1pk     = { S = "STOCK" }
+    gsi1sk     = { S = "${each.value.s.product_id}#${each.value.s.warehouse}" }
+    entity     = { S = "STOCK" }
+    product_id = { S = each.value.s.product_id }
+    warehouse  = { S = each.value.s.warehouse }
+    on_hand    = { N = tostring(each.value.s.on_hand) }
+    reserved   = { N = "0" }
+    available  = { N = tostring(each.value.s.on_hand) }
+    version    = { N = "0" }
   })
 
   lifecycle {

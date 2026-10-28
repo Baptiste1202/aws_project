@@ -1,0 +1,80 @@
+# Intégration continue (lot 4) : aucun accès AWS, aucun secret.
+#   terraform : fmt -check et validate (sans backend ni identifiants) ;
+#   tests     : la stack Docker locale (LocalStack, PostgreSQL, faux Stripe, fournisseur
+#               d'identité local) puis tous les scénarios, un job par solution, en parallèle.
+# Runners ARM : les Lambdas sont en arm64 (comme sur AWS) et LocalStack les exécute
+# dans des conteneurs ; sur x86 elles tourneraient en émulation.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    name: Terraform (fmt, validate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  tests:
+    name: Scénarios (${{ matrix.solution }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - solution: vm
+            port: 8080
+          - solution: serverless
+            port: 8081
+          - solution: hybrid
+            port: 8082
+    steps:
+      - uses: actions/checkout@v4
+      - name: Démarrer la stack locale
+        run: docker compose -f local/docker-compose.yml up --build -d
+      - name: Attendre la boutique
+        run: |
+          for _ in $(seq 1 90); do
+            curl -sf "http://localhost:${{ matrix.port }}/api/health" >/dev/null && exit 0
+            sleep 5
+          done
+          docker compose -f local/docker-compose.yml logs --tail 50
+          exit 1
+      - name: Scénarios de test (${{ matrix.solution }})
+        shell: bash  # -eo pipefail : l'échec des tests n'est pas masqué par tee
+        run: ./scripts/test_scenario.sh "http://localhost:${{ matrix.port }}" | tee "tests_${{ matrix.solution }}.txt"
+      - name: Journaux de la stack
+        if: failure()
+        run: docker compose -f local/docker-compose.yml logs --tail 200 > "stack_${{ matrix.solution }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.solution }}
+          path: |
+            tests_${{ matrix.solution }}.txt
+            stack_${{ matrix.solution }}.log
+          if-no-files-found: ignore
+      - name: Arrêter la stack
+        if: always()
+        run: docker compose -f local/docker-compose.yml down -v

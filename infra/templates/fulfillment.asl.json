@@ -1,0 +1,52 @@
+{
+  "Comment": "Traitement d'une commande payée : emballage, expédition, transit, livraison. Chaque étape appelle la Lambda fulfillment (transition conditionnelle dans DynamoDB + événement SNS) ; une commande annulée arrête le workflow.",
+  "StartAt": "Pack",
+  "States": {
+    "Pack": {
+      "Type": "Task",
+      "Resource": "${fulfillment_arn}",
+      "Parameters": { "order_id.$": "$.order_id", "event": "ORDER_PAID" },
+      "ResultPath": "$.step",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "Next": "PackedOrStop"
+    },
+    "PackedOrStop": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.step.stop", "BooleanEquals": true, "Next": "Stopped" }],
+      "Default": "WaitBeforeShipping"
+    },
+    "WaitBeforeShipping": { "Type": "Wait", "Seconds": ${delay}, "Next": "Ship" },
+    "Ship": {
+      "Type": "Task",
+      "Resource": "${fulfillment_arn}",
+      "Parameters": { "order_id.$": "$.order_id", "event": "ORDER_PACKED" },
+      "ResultPath": "$.step",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "Next": "ShippedOrStop"
+    },
+    "ShippedOrStop": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.step.stop", "BooleanEquals": true, "Next": "Stopped" }],
+      "Default": "WaitCarrierPickup"
+    },
+    "WaitCarrierPickup": { "Type": "Wait", "Seconds": ${delay}, "Next": "InTransit" },
+    "InTransit": {
+      "Type": "Task",
+      "Resource": "${fulfillment_arn}",
+      "Parameters": { "order_id.$": "$.order_id", "event": "ORDER_SHIPPED" },
+      "ResultPath": "$.step",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "Next": "WaitDelivery"
+    },
+    "WaitDelivery": { "Type": "Wait", "Seconds": ${delay}, "Next": "Deliver" },
+    "Deliver": {
+      "Type": "Task",
+      "Resource": "${fulfillment_arn}",
+      "Parameters": { "order_id.$": "$.order_id", "event": "ORDER_IN_TRANSIT" },
+      "ResultPath": "$.step",
+      "Retry": [{ "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 4, "BackoffRate": 2 }],
+      "End": true
+    },
+    "Stopped": { "Type": "Succeed", "Comment": "Commande annulée avant l'étape : rien à faire." }
+  }
+}

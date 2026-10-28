@@ -1,32 +1,42 @@
 flowchart TB
   user([Navigateur]) -- HTTPS --> cf[CloudFront]
+  user -. "Stripe.js (carte)" .-> stripe([Stripe<br/>mode test])
+  user -- "wss : suivi en direct" --> ws[API Gateway<br/>WebSocket]
+  user -- "connexion" --> cognito[Cognito]
   subgraph region["Région eu-west-3 (Paris)"]
     subgraph vpc["VPC 10.20.0.0/16"]
       subgraph pub["Sous-réseaux publics (2 AZ)"]
         alb[ALB<br/>prefix list CloudFront<br/>+ X-Origin-Verify]
         subgraph asg["Auto Scaling Group 1–2 × t3.micro (CPU 60 %)"]
-          ec2a[EC2 AZ a<br/>site + API + worker SQS]
+          ec2a["EC2 AZ a : service shop<br/>site + API + worker SQS<br/>(livraison, réappro, rapport)<br/>+ purge"]
           ec2b[EC2 AZ b]
         end
       end
       subgraph priv["Sous-réseaux privés (2 AZ)"]
-        rds[(RDS PostgreSQL 16<br/>db.t3.micro)]
+        rds[(RDS PostgreSQL 16<br/>db.t3.micro, base shop)]
       end
     end
-    ssm[SSM Parameter Store<br/>mot de passe BDD]
+    ssm[SSM SecureString<br/>mot de passe BDD, clé Stripe]
     sns{{SNS order-events}}
-    q1[SQS vm-processing<br/>délai 5 s + DLQ]
-    q2[SQS audit + DLQ]
-    aud[Lambda audit]
-    s3audit[(S3 audit)]
+    q1[SQS vm-processing + DLQ<br/>délai = temps simulé]
+    sched[EventBridge Scheduler<br/>6 h Paris]
+    s3data[(S3 data<br/>CSV, factures, rapports)]
+    s3img[(S3 images)]
+    qmail[SQS mailer] --> mailer[Lambda mailer] --> ses[SES]
+    qrt[SQS realtime] --> notif[Lambda notifier] --> ws
+    qaud[SQS audit] --> aud[Lambda audit] --> s3audit[(S3 audit)]
+    athena[Athena + Glue]
     msk[[MSK Kafka<br/>option, désactivé]]
   end
-  mail([E-mail de notification<br/>abonnement SNS])
-  cf --> alb --> ec2a & ec2b
+  cf -- "/*" --> alb --> ec2a & ec2b
+  cf -- "/images/*" --> s3img
   ec2a & ec2b -- "SELECT … FOR UPDATE" --> rds
-  ec2a -. lecture .-> ssm
-  ec2a -- ORDER_CREATED --> sns
-  sns -- "filtre source=vm" --> q1 -- long polling --> ec2a
-  sns --> q2 --> aud --> s3audit
-  sns --> mail
+  ec2a -. lit .-> ssm
+  ec2a -. "PaymentIntent, remboursement" .-> stripe
+  ec2a -- événements --> sns
+  sns -- "source=vm" --> q1 -- "long polling<br/>une étape par message" --> ec2a
+  sched -- "DAILY_REPORT_REQUESTED" --> q1
+  ec2a --> s3data
+  sns --> qmail & qrt & qaud
+  athena -. requêtes .-> s3audit
   sns -. "kafka-bridge (option)" .-> msk

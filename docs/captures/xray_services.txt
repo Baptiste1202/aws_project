@@ -1,0 +1,52 @@
+X-Ray : carte des services sur les 3 dernières heures (GetServiceGraph)
+
+service                                          type                                  appels   moyenne  erreurs
+threadly-dev-api                                 AWS::Lambda                             1392     102 ms        0
+threadly-dev-api                                 AWS::Lambda::Function                   1392     101 ms        0
+threadly-dev-audit                               AWS::Lambda                             1092      56 ms        0
+threadly-dev-audit                               AWS::Lambda::Function                   1092      54 ms        0
+threadly-dev-hybrid-read                         AWS::Lambda                              954      41 ms        0
+threadly-dev-hybrid-read                         AWS::Lambda::Function                    954      46 ms        0
+threadly-dev-notifier                            AWS::Lambda                              725      27 ms        0
+threadly-dev-notifier                            AWS::Lambda::Function                    725      32 ms        0
+threadly-dev-mailer                              AWS::Lambda                              523      41 ms        0
+threadly-dev-mailer                              AWS::Lambda::Function                    523      40 ms        0
+threadly-dev-fulfillment                         AWS::Lambda::Function                    198     115 ms        0
+threadly-dev-fulfillment                         AWS::Lambda                              196     127 ms        0
+threadly-dev-hybrid-fulfillment                  AWS::Lambda                              136     128 ms        0
+threadly-dev-hybrid-fulfillment                  AWS::Lambda::Function                    136     114 ms        0
+threadly-dev-hybrid-projector                    AWS::Lambda                              114      92 ms        0
+threadly-dev-hybrid-projector                    AWS::Lambda::Function                    114      87 ms        0
+threadly-dev-processor                           AWS::Lambda::Function                     68      70 ms        0
+threadly-dev-processor                           AWS::Lambda                               66      86 ms        0
+threadly-dev-realtime                            AWS::Lambda                               44     122 ms        0
+threadly-dev-realtime                            AWS::Lambda::Function                     44      92 ms        0
+threadly-dev-hybrid-processor                    AWS::Lambda::Function                     39     185 ms        0
+threadly-dev-sweeper                             AWS::Lambda                               39      11 ms        0
+threadly-dev-sweeper                             AWS::Lambda::Function                     38     479 ms        0
+threadly-dev-hybrid-processor                    AWS::Lambda                               35     160 ms        0
+threadly-dev-supplier                            AWS::Lambda                               25     434 ms        0
+threadly-dev-supplier                            AWS::Lambda::Function                     25     379 ms        0
+threadly-dev-thumbnailer                         AWS::Lambda                               10       6 ms        0
+threadly-dev-thumbnailer                         AWS::Lambda::Function                     10     270 ms        0
+threadly-dev-reporter                            AWS::Lambda                                3    1448 ms        0
+threadly-dev-reporter                            AWS::Lambda::Function                      3     934 ms        0
+threadly-dev-hybrid-reporter                     AWS::Lambda                                2    1392 ms        0
+threadly-dev-hybrid-reporter                     AWS::Lambda::Function                      2     816 ms        0
+
+Traces : 5016 résumées (GetTraceSummaries, première page)
+  1-6ae1d437-234f12942793fdf50c84005d   309010 ms  api
+  1-6ae1d0f8-66bbe74e7d5b75bb09d8e4f8   125752 ms  api
+  1-6ae1d7c4-c40b86ebc66e5da624b6f594    33148 ms  notifier
+  1-6ae1d0c0-38b3f6ba2313c1e60cfcd123    18096 ms  hybrid-fulfillment, hybrid-processor
+  1-6ae1d082-711df16d1fd4d8c6db974803    17769 ms  fulfillment, processor
+  1-6ae1d240-742ad518b0acb0c81fc6088e    16863 ms  hybrid-fulfillment, hybrid-processor
+  1-6ae1d423-91ebb4a88df27e11531d0296    16721 ms  hybrid-fulfillment, hybrid-processor
+  1-6ae1d21d-c351ca70dd020f669cc84a83    16545 ms  fulfillment, processor
+  1-6ae1d5f1-daa413e076ebd149c7d2c972    16419 ms  fulfillment, processor
+  1-6ae1d423-17eb283dca0eb2c9077a104c    16347 ms  fulfillment, processor
+  1-6ae1d163-6cdb10bc837e190e7530ac61    16340 ms  fulfillment, processor
+  1-6ae1d4c3-6f81a99b1d4afd38378dc086    16325 ms  hybrid-fulfillment, hybrid-processor
+  1-6ae1d354-4a05c7b13a6be2fbf1028414    16276 ms  fulfillment, processor
+  1-6ae1d380-47ebf3e92c022656c3115198    16254 ms  fulfillment, processor
+  1-6ae1d372-60d6841aec7603aeb5b407d7    16252 ms  hybrid-fulfillment, hybrid-processor

@@ -4,13 +4,33 @@
 #   http://localhost:8081  solution serverless  (nginx = CloudFront, Lambda + DynamoDB)
 #   http://localhost:8082  solution hybride     (nginx = CloudFront, Lambda + DynamoDB, EC2 + PostgreSQL)
 # PostgreSQL remplace RDS ; LocalStack (édition communautaire, gratuite) simule Lambda,
-# DynamoDB, SNS, SQS, S3 et SSM. Aucun appel au vrai AWS.
+# DynamoDB, SNS, SQS, S3 et SSM. Aucun appel au vrai AWS. Pas d'API Gateway WebSocket
+# en local (LocalStack payant) : le front suit les commandes par polling.
 #
 # LocalStack est épinglé sur 4.14.0, la dernière version communautaire qui démarre sans
 # jeton. Les versions plus récentes exigent un compte LocalStack (gratuit) :
 #   LOCALSTACK_VERSION=2026.10.3 LOCALSTACK_AUTH_TOKEN=... docker compose -f local/docker-compose.yml up --build
 
 name: threadly-local
+
+# Fournisseur d'identité local (à la place de Cognito, absent de LocalStack gratuit).
+x-auth-env: &auth-env
+  AUTH_ISSUER: http://auth-local:9000
+  AUTH_CLIENT_ID: local-client
+  AUTH_JWKS_URL: http://auth-local:9000/.well-known/jwks.json
+  # Port 9100 sur la machine (9000 est souvent pris), 9000 dans le réseau Docker.
+  AUTH_PUBLIC_URL: http://localhost:9100
+  # Seulement ici : le code n'accepte un émetteur non Cognito que si ALLOW_LOCAL_AUTH=1.
+  ALLOW_LOCAL_AUTH: "1"
+
+# Faux Stripe local (local/stripe_local.py) : même API que Stripe pour ce qu'utilise la
+# boutique. ALLOW_LOCAL_STRIPE n'est défini qu'ici (voir shop/payments.py).
+x-stripe-env: &stripe-env
+  STRIPE_PUBLISHABLE_KEY: pk_test_local
+  STRIPE_SECRET_PARAM: /threadly-local/stripe/secret
+  STRIPE_API_BASE: http://stripe-local:12111
+  STRIPE_PUBLIC_BASE: http://localhost:12111
+  ALLOW_LOCAL_STRIPE: "1"
 
 x-aws-env: &aws-env
   AWS_REGION: eu-west-3
@@ -21,13 +41,19 @@ x-aws-env: &aws-env
 
 # Variables communes aux services "EC2" (app.py).
 x-app-env: &app-env
-  <<: *aws-env
+  <<: [*aws-env, *auth-env, *stripe-env]
   STATIC_DIR: /opt/shop/static
   PRODUCTS_FILE: /opt/shop/products.json
   DB_HOST: db
   DB_USER: shop_admin
   DB_PASSWORD_PARAM: /threadly-local/db/password
   TOPIC_ARN: arn:aws:sns:eu-west-3:000000000000:threadly-order-events
+  DATA_BUCKET: threadly-local-data
+  IMAGES_BUCKET: threadly-local-images
+  # Miniatures lues directement dans LocalStack (sur AWS : /images/ derrière CloudFront).
+  IMAGES_URL: http://localhost:4566/threadly-local-images/images
+  # Liens présignés joignables depuis la machine (et non par l'adresse interne de LocalStack).
+  S3_PUBLIC_ENDPOINT: http://localhost:4566
 
 services:
   db:
@@ -36,6 +62,9 @@ services:
       POSTGRES_DB: shop
       POSTGRES_USER: shop_admin
       POSTGRES_PASSWORD: local-password
+    volumes:
+      # Compte en lecture seule de Grafana (créé à la première initialisation du volume).
+      - ./grafana/readonly.sql:/docker-entrypoint-initdb.d/10-grafana-reader.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "shop_admin", "-d", "shop"]
       interval: 2s
@@ -46,7 +75,7 @@ services:
     ports: ["4566:4566"] # pour lire le bucket d'audit depuis la machine (scénario 5)
     environment:
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
-      SERVICES: lambda,dynamodb,sns,sqs,s3,ssm,sts,iam,logs
+      SERVICES: lambda,dynamodb,sns,sqs,s3,ssm,sts,iam,logs,events,stepfunctions,ses
       # Les Lambdas tournent dans des conteneurs lancés par LocalStack, sur ce réseau.
       LAMBDA_DOCKER_NETWORK: threadly-local_default
       # URL de file indépendantes du nom d'hôte : http://localstack:4566/000000000000/<file>
@@ -56,6 +85,14 @@ services:
       # leurs démarrages à froid dépassent le délai de LocalStack (erreurs 500).
       LAMBDA_LIMITS_CONCURRENT_EXECUTIONS: "10"
       LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT: "60"
+      # Conteneur Lambda inactif arrêté après 1 min (10 min par défaut) : avec une
+      # vingtaine de fonctions, les conteneurs gardés au chaud saturaient la mémoire de
+      # Docker et le noyau tuait LocalStack (OOM) au milieu des tests.
+      LAMBDA_KEEPALIVE_MS: "60000"
+      # LocalStack refuse (403) les requêtes dont l'en-tête Origin n'est pas dans sa
+      # liste : contrôle propre à l'émulateur (une Function URL AWS sans CORS ne filtre
+      # pas). Sans cela, le navigateur ne peut ni lire l'API ni déposer de CSV.
+      DISABLE_CORS_CHECKS: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     # À l'arrêt, LocalStack supprime les conteneurs Lambda qu'il a lancés : il lui faut
@@ -71,13 +108,34 @@ services:
     build: { context: .., dockerfile: local/Dockerfile }
     command: ["python", "/opt/shop/init_aws.py"]
     environment:
-      <<: *aws-env
+      <<: [*aws-env, *auth-env, *stripe-env]
       FULFILLMENT_DELAY_SECONDS: "5"
       ORIGIN_SECRET: local-origin-secret
+      S3_PUBLIC_ENDPOINT: http://localhost:4566
     volumes:
       - nginx-generated:/etc/nginx/generated
     depends_on:
       localstack: { condition: service_healthy }
+
+  # Fournisseur d'identité local : jetons de même forme que Cognito (voir auth_local.py).
+  # Comptes de démonstration, mots de passe sans valeur hors de cette stack.
+  auth-local:
+    build: { context: .., dockerfile: local/Dockerfile }
+    command: ["python", "/opt/shop/auth_local.py"]
+    ports: ["9100:9000"]
+    environment:
+      AUTH_ISSUER: http://auth-local:9000
+      AUTH_CLIENT_ID: local-client
+      AUTH_DEMO_USERS: >-
+        admin@threadly.local:admin-local-pass:admin,
+        magasinier@threadly.local:mag-local-pass:magasinier,
+        client@threadly.local:client-local-pass
+
+  # Faux Stripe (paiement de test sans compte Stripe), voir stripe_local.py.
+  stripe-local:
+    build: { context: .., dockerfile: local/Dockerfile }
+    command: ["python", "/opt/shop/stripe_local.py"]
+    ports: ["12111:12111"]
 
   # Solution VM (EC2) : site + API + worker SQS, base "shop".
   app:
@@ -101,7 +159,10 @@ services:
       SHOP_SOURCE: hybrid
       PORT: "8081"
       DB_NAME: shop_hybrid
-      QUEUE_URL: ""
+      # Worker de réappro (lot 3b) : écritures de stock dans RDS.
+      QUEUE_URL: http://localstack:4566/000000000000/threadly-hybrid-restock
+      # Le statut des commandes fait foi dans le modèle de lecture DynamoDB (annulation).
+      STATUS_TABLE: threadly-hybrid
     depends_on:
       db: { condition: service_healthy }
       init: { condition: service_completed_successfully }
@@ -117,6 +178,24 @@ services:
     depends_on:
       init: { condition: service_completed_successfully }
       app-hybrid: { condition: service_started }
+
+  # Grafana (lot 4) : tableau de bord ventes et stock des bases PostgreSQL (VM, hybride),
+  # provisionné automatiquement. http://localhost:3000, consultation anonyme.
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: grafana-local-admin  # stack locale seulement
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/threadly.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      db: { condition: service_healthy }
 
 volumes:
   nginx-generated:

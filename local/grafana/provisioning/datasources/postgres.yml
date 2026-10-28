@@ -1,0 +1,31 @@
+# Sources de données provisionnées (stack locale) : les bases PostgreSQL des solutions VM
+# et hybride, lues par un compte en lecture seule (local/grafana/readonly.sql).
+# Le serverless (DynamoDB) n'a pas de source : Grafana ne lit pas DynamoDB sans greffon.
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL VM (shop)
+    uid: pg-vm
+    type: grafana-postgresql-datasource
+    url: db:5432
+    user: grafana_reader
+    secureJsonData:
+      password: grafana-local-pass
+    jsonData:
+      database: shop
+      sslmode: disable
+      postgresVersion: 1600
+    isDefault: true
+    editable: false
+  - name: PostgreSQL hybride (shop_hybrid)
+    uid: pg-hybrid
+    type: grafana-postgresql-datasource
+    url: db:5432
+    user: grafana_reader
+    secureJsonData:
+      password: grafana-local-pass
+    jsonData:
+      database: shop_hybrid
+      sslmode: disable
+      postgresVersion: 1600
+    editable: false

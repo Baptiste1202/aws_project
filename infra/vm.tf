@@ -16,7 +16,7 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 locals {
   vm_arch = can(regex("^[a-z]+[0-9]+g", var.vm_instance_type)) ? "arm64" : "x86_64"
   # Files lues par les workers EC2 (aucune si seule la solution hybride est déployée).
-  ec2_queue_arns = [for k in ["vm-processing", "kafka-bridge"] : aws_sqs_queue.main[k].arn if contains(keys(local.queues), k)]
+  ec2_queue_arns = [for k in ["vm-processing", "hybrid-restock", "kafka-bridge"] : aws_sqs_queue.main[k].arn if contains(keys(local.queues), k)]
 }
 
 data "aws_ssm_parameter" "al2023" {
@@ -218,9 +218,24 @@ resource "aws_iam_role_policy" "app" {
           Resource  = [aws_s3_bucket.web.arn]
           Condition = { StringLike = { "s3:prefix" = ["web/*", "vm-app/*"] } }
         },
-        { Effect = "Allow", Action = ["ssm:GetParameter"], Resource = [aws_ssm_parameter.db_password[0].arn] },
+        {
+          Effect   = "Allow"
+          Action   = ["ssm:GetParameter"]
+          Resource = [aws_ssm_parameter.db_password[0].arn]
+        },
         { Effect = "Allow", Action = ["sns:Publish"], Resource = [aws_sns_topic.orders.arn] },
       ],
+      local.data_statements,
+      local.images_statements,
+      local.stripe_statements,
+      # Hybride : l'annulation passe la commande à CANCELLED dans le modèle de lecture,
+      # où le statut fait foi (et l'y crée depuis RDS si la projection n'est pas passée).
+      # Paiement : passage à CONFIRMED (transaction qui retire aussi le marqueur d'impayé).
+      var.deploy_hybrid ? [{
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = [aws_dynamodb_table.main["hybrid"].arn]
+      }] : [],
       length(local.ec2_queue_arns) > 0 ? [{
         Effect   = "Allow"
         Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
@@ -259,16 +274,23 @@ resource "aws_launch_template" "app" {
   }
 
   user_data = base64encode(templatefile("${path.module}/templates/user_data.sh.tftpl", {
-    region            = var.region
-    bucket            = aws_s3_bucket.web.id
-    app_version       = md5(join("-", [for o in concat(values(aws_s3_object.vm_app), aws_s3_object.vm_products, values(aws_s3_object.frontend)) : o.etag]))
-    db_host           = aws_db_instance.main[0].address
-    db_user           = aws_db_instance.main[0].username
-    db_password_param = aws_ssm_parameter.db_password[0].name
-    topic_arn         = aws_sns_topic.orders.arn
-    services          = local.ec2_services
-    kafka_bootstrap   = var.enable_msk ? aws_msk_cluster.main[0].bootstrap_brokers : ""
-    kafka_queue_url   = var.enable_msk ? aws_sqs_queue.main["kafka-bridge"].url : ""
+    region                 = var.region
+    bucket                 = aws_s3_bucket.web.id
+    app_version            = md5(join("-", [for o in concat(values(aws_s3_object.vm_app), aws_s3_object.vm_products, values(aws_s3_object.frontend)) : o.etag]))
+    db_host                = aws_db_instance.main[0].address
+    db_user                = aws_db_instance.main[0].username
+    db_password_param      = aws_ssm_parameter.db_password[0].name
+    topic_arn              = aws_sns_topic.orders.arn
+    auth_issuer            = local.auth_env.AUTH_ISSUER
+    auth_client_id         = local.auth_env.AUTH_CLIENT_ID
+    data_bucket            = aws_s3_bucket.data.id
+    images_bucket          = aws_s3_bucket.images.id
+    realtime_url           = local.realtime_url
+    stripe_publishable_key = local.stripe_enabled ? var.stripe_publishable_key : ""
+    stripe_secret_param    = local.stripe_enabled ? local.stripe_param : ""
+    services               = local.ec2_services
+    kafka_bootstrap        = var.enable_msk ? aws_msk_cluster.main[0].bootstrap_brokers : ""
+    kafka_queue_url        = var.enable_msk ? aws_sqs_queue.main["kafka-bridge"].url : ""
   }))
 
   tag_specifications {

@@ -1,472 +1,729 @@
+<div class="cover">
+
 # Threadly — boutique en ligne sur AWS
 
-*Projet AWS FISA 2026, Infrastructures cloud et virtualisation. Rapport (§4.2 du sujet), octobre 2026.*
+<p class="subtitle">Projet AWS · Infrastructures cloud et virtualisation<br/> Enide Djender · Baptiste Bertrand  · Mika Vivier</p>
+
+<p class="subtitle">Trois solutions — <b>serverless</b>, <b>machines virtuelles</b> et <b>hybride</b> — décrites en Terraform,
+région eu-west-3 (Paris), testées en local (Docker) puis sur AWS.</p>
+
+<div class="toc">
+
+**Table des matières**
+
+**Corps du rapport** (pages 2 à 5)
+
+1. [Contexte et exigences](#1-contexte-et-exigences)
+2. [Les trois architectures](#2-les-trois-architectures)
+3. [Un code métier, trois infrastructures](#3-un-code-metier-trois-infrastructures)
+4. [Free Tier et coûts](#4-free-tier-et-couts)
+5. [Sécurité](#5-securite)
+6. [Résultats](#6-resultats)
+7. [Conclusion et limites](#7-conclusion-et-limites)
+
+**Annexes**
+
+- A. [Fonctionnalités et services AWS utilisés](#annexe-a-fonctionnalites-et-services-aws-utilises)
+- B. [Schémas d'architecture en grand format](#annexe-b-schemas-darchitecture-en-grand-format)
+- C. [Captures](#annexe-c-captures)
+- D. [Sorties détaillées des tests et de k6](#annexe-d-sorties-detaillees-des-tests-et-de-k6)
+- E. [Déroulement du projet, bugs trouvés et incident CloudTrail](#annexe-e-deroulement-du-projet-bugs-trouves-et-incident-cloudtrail)
+- F. [Coûts et sécurité en détail](#annexe-f-couts-et-securite-en-detail)
+- G. [Présenté mais non implémenté](#annexe-g-presente-mais-non-implemente)
+- H. [Mode d'emploi pour le correcteur](#annexe-h-mode-demploi-pour-le-correcteur)
+
+</div>
+</div>
+
+<div class="body">
 
 ## 1. Contexte et exigences
 
-Threadly est une boutique de vêtements fictive : t-shirts, pulls et baskets. Les clients
-consultent un catalogue, commandent un ou plusieurs produits et suivent leur commande en
-temps réel. En interne, chaque commande est archivée pour l'audit, puis elle passe par une
-préparation simulée : emballage, puis expédition avec un transporteur et un numéro de suivi.
+Threadly est une boutique de vêtements fictive (t-shirts, pulls, baskets). Les clients
+parcourent et recherchent le catalogue, créent un compte, commandent, paient par carte
+(Stripe en mode test), suivent leur commande en temps réel jusqu'à la livraison et
+peuvent la retourner sous 14 jours. En interne, chaque événement est archivé pour l'audit,
+la commande passe par une préparation simulée (emballage, expédition, transit, livraison),
+le stock est géré par entrepôt avec réapprovisionnement automatique, et un back-office
+fournit tableau de bord, retours et rapport quotidien (liste complète : annexe A).
 
-Le projet comprend **trois solutions** :
+Les trois solutions sont **déployées ensemble** par un seul `./up.sh` et supprimées par
+`./down.sh`. Elles servent le même front, partagent le bus d'événements et l'audit, et
+passent les mêmes **36 scénarios de test**, ce qui permet de les comparer
+directement.
 
-1. une solution **serverless** ;
-2. une solution à base de **machines virtuelles** (EC2) ;
-3. une solution **hybride**, qui place chaque partie de la boutique sur le service qui lui
-   convient le mieux : fichiers statiques sur S3, lectures sur Lambda + DynamoDB,
-   commandes sur EC2 + RDS, traitement sur Lambda.
-
-Toutes sont hautement disponibles, décrites en Terraform et adaptées au Free Tier pour
-garder un coût nul. Elles sont **déployées ensemble** avec un seul `terraform apply`.
-Elles servent le même front et partagent le bus d'événements et l'audit, ce qui permet de
-les comparer directement (§2.5).
-
-| Exigence du sujet | Solution serverless | Solution VM | Solution hybride |
+| Exigence du sujet | Serverless | VM | Hybride |
 |---|---|---|---|
-| Parcourir le catalogue via une interface web | CloudFront + S3 (site statique, OAC) ; API : Lambda `api` (Function URL) + DynamoDB | CloudFront → ALB → EC2 (site + API Python) → RDS PostgreSQL | CloudFront + S3 (site, OAC) ; catalogue : Lambda `hybrid-read` + DynamoDB |
-| Commander un ou plusieurs produits | Transaction DynamoDB (`TransactWriteItems`) : stock et commande en une opération atomique | Transaction PostgreSQL avec `SELECT … FOR UPDATE` | CloudFront → ALB → EC2 → transaction PostgreSQL (`SELECT … FOR UPDATE`) |
-| Message de confirmation | SNS `order-events` → abonnement e-mail (`ORDER_CREATED`, `ORDER_SHIPPED`) ; suivi en direct dans le front | identique | identique ; suivi servi par la Lambda `hybrid-read` |
-| Enregistrer toutes les commandes (audit, reporting) | SNS → SQS `audit` → Lambda `audit` → S3, partitionné `event_type=…/date=…` (lisible par Athena) | identique (bus commun) | identique (bus commun) |
-| Traitement interne (emballage, expédition) | SNS → SQS `processing` (délai 5 s) → Lambda `processor` | SNS → SQS `vm-processing` (délai 5 s) → worker sur les EC2 | SNS → SQS `hybrid-processing` (délai 5 s) → Lambda `hybrid-processor` |
-| Serverless **et** Compute EC2 | Lambda, DynamoDB, S3, SNS, SQS | VPC, ALB, Auto Scaling Group EC2, RDS | les deux : Lambda et DynamoDB pour lire, EC2 et RDS pour écrire |
-| Événementiel (SNS), streaming si possible (Kafka/MSK) | SNS + SQS avec politiques de filtrage | SNS + SQS ; MSK prévu en option (`enable_msk`) | SNS + SQS ; projection CQRS des événements dans DynamoDB |
-| Terraform | tout dans `infra/`, `up.sh` / `down.sh` | idem | idem (`hybrid.tf` et ressources partagées) |
-| Haute disponibilité | services managés multi-AZ | ALB et ASG sur 2 AZ, CloudFront | lectures multi-AZ, commandes sur 2 AZ |
-| Coût nul (Free Tier) | voir §3 | voir §3 | voir §3 |
+| Catalogue via une interface web | CloudFront + S3 (OAC) ; Lambda `api` + DynamoDB | CloudFront → ALB → EC2 → RDS PostgreSQL | CloudFront + S3 ; Lambda `hybrid-read` + DynamoDB |
+| Commander un ou plusieurs produits | Transaction DynamoDB conditionnelle | Transaction SQL `SELECT … FOR UPDATE` | EC2 → transaction SQL (RDS) |
+| Message de confirmation | SES (Lambda `mailer`) : confirmation avec facture PDF, expédition, livraison… ; suivi en direct (WebSocket API Gateway) | identique | identique |
+| Enregistrer les commandes (audit, reporting) | SNS → SQS → Lambda `audit` → S3 partitionné, requêtable par Athena | identique | identique |
+| Traitement interne | Step Functions (Lambdas `fulfillment`, `supplier`) | Worker SQS sur les EC2 | Step Functions ; réappro par l'EC2 |
+| Serverless **et** Compute EC2 | Lambda, DynamoDB, Step Functions | VPC, ALB, ASG EC2, RDS | les deux (lectures Lambda, écritures EC2) |
+| Événementiel, streaming | SNS + SQS filtrés | SNS + SQS ; MSK en option | SNS + SQS ; projection CQRS |
+| Terraform, haute disponibilité | `infra/`, services multi-AZ | ALB et ASG sur 2 AZ | lectures multi-AZ, écritures sur 2 AZ |
+| Coût nul (Free Tier) | §4 | §4 | §4 |
 
 ## 2. Les trois architectures
 
-### 2.1 Solution 1 : serverless
+Schémas en grand format : annexe B.
+
+<div class="archi">
+
+![Serverless](architecture_serverless.png)
+
+**Serverless.** CloudFront sert le site depuis S3 et transmet `/api/*` à la Function URL
+de la Lambda `api` (en-tête secret d'origine). Les données sont dans une table DynamoDB
+(*single-table design*), modifiées par transactions conditionnelles. Le traitement est
+orchestré par **Step Functions** : livraison (`fulfillment`) et réappro (`restock`).
+Rien ne tourne sans requête : coût nul au repos.
+
+![VM](architecture_vm.png)
+
+**Machines virtuelles.** CloudFront → ALB (2 AZ, n'accepte que CloudFront) → Auto
+Scaling Group de `t3.micro`. Chaque instance sert le site et l'API, et fait **tout le
+traitement interne sur EC2** : un worker lit sa file SQS, une étape par message, le délai
+de la file simulant le temps passé. Les données sont dans RDS PostgreSQL, en sous-réseau
+privé.
+
+![Hybride](architecture_hybrid.png)
+
+**Hybride.** Chaque partie va sur le service qui lui convient : site sur S3, lectures sur
+Lambda + DynamoDB, écritures sur EC2 + RDS (transaction SQL, sans quota Lambda),
+livraison par Step Functions. Une CloudFront Function route par méthode HTTP. **RDS fait
+foi pour le stock et la création** ; DynamoDB est un **modèle de lecture** mis à jour
+par événements versionnés (CQRS, cohérence à terme) et fait foi pour le statut des
+commandes. L'hybride réutilise le VPC, l'ALB, l'EC2 et l'instance RDS de la VM : il
+n'ajoute **aucune ressource facturée à l'heure**.
+
+</div>
+
+## 3. Un code métier, trois infrastructures
+
+**Pourquoi partager le code.** Les règles (stock, paiement, livraison, retours, e-mails,
+facture, tableau de bord) sont écrites une seule fois dans le paquet `src/shop`, utilisé
+tel quel par les Lambdas et par `app.py` sur les EC2. Seul l'accès aux données change
+(`DynamoStore` ou `SqlStore`, même contrat). Une règle corrigée l'est pour les trois, les
+36 scénarios s'appliquent aux trois, et **les différences mesurées (§6)
+viennent de l'infrastructure, pas du code**.
+
+| Dimension | Serverless | VM | Hybride |
+|---|---|---|---|
+| **Calcul** | Lambda ; Step Functions | EC2 dans un ASG (1 à 2), service systemd : API, worker, purge | Lambda (lectures), Step Functions ; EC2 (écritures, réappro) |
+| **Données** | DynamoDB, transactions conditionnelles | RDS PostgreSQL, transactions SQL | RDS (stock, création) + DynamoDB (statut, lecture) |
+| **Réseau** | Pas de VPC ; Function URL derrière CloudFront | VPC 2 AZ, ALB limité à CloudFront, RDS privé | Les deux, routage par méthode |
+| **Montée en charge** | Automatique, mais quota de 10 Lambdas simultanées | ASG sur le CPU ; pool de 10 connexions | Lectures élastiques, écritures sur l'EC2 |
+| **Exploitation** | Rien à patcher, traces X-Ray par fonction | AMI, user data, systemd, Session Manager | Les deux, plus la cohérence de deux modèles |
+| **Coût au repos** | 0 $ | ≈ 0,07 $/h (ALB, EC2, RDS, IPv4) | 0 $ de plus que la VM (ressources partagées) |
+
+**Orchestration : Step Functions contre worker sur VM.** La VM reste une vraie solution
+« machines virtuelles » : son traitement tourne sur EC2, sans Step Functions. Les deux
+approches appliquent les mêmes transitions (`domain.TRANSITIONS`), par mises à jour
+conditionnelles :
+
+| | Step Functions (serverless, hybride) | Worker SQS sur EC2 (VM) |
+|---|---|---|
+| Processus | Explicite et versionné ([fulfillment.asl.json](../infra/templates/fulfillment.asl.json)) : `Task`, `Wait`, `Choice` | Implicite : chaque étape publie l'événement suivant |
+| Attente | État `Wait`, rien de facturé pendant l'attente | Délai de livraison de la file SQS (15 min au plus) |
+| Erreurs, doublons | `Retry` déclaratif ; nom d'exécution = commande | 3 réceptions puis DLQ ; transition conditionnelle |
+| Observabilité | Historique graphique, traces X-Ray | Journaux du service, métriques des files |
+| Coût | 9 transitions par commande, 4 000 gratuites par mois | Inclus dans l'EC2 déjà payée |
+
+Step Functions rend le processus visible et rejouable sans serveur ; c'est le bon choix
+dès qu'il y a des branches, de longues attentes ou des compensations. Le worker est plus
+simple et ne coûte rien de plus quand une instance tourne déjà, mais l'enchaînement est
+dispersé dans le code.
+
+## 4. Free Tier et coûts
+
+L'infrastructure n'existe que pendant les sessions de travail (`up.sh` puis `down.sh`).
+Le compte, créé en octobre 2026, dépend du **plan gratuit à crédits** (6 mois, 200 $ de
+crédits au plus) : ce qui n'est pas gratuit à vie est payé par les crédits. Détail par
+service et choix de dimensionnement : annexe F.
+
+| Poste | Coût d'une heure de démo (eu-west-3, prix public) |
+|---|---|
+| ALB + EC2 `t3.micro` + RDS `db.t3.micro` + IPv4 publiques (VM, partagés par l'hybride) | ≈ 0,07 $/h |
+| Lambda, SNS, SQS, S3, CloudFront, Step Functions, Scheduler, SES, X-Ray, Cognito ; DynamoDB facturé à la requête | ≈ 0 $ (offre toujours gratuite ou quelques centimes, volumes de test) |
+| Athena (10 Mo facturés au minimum par requête) | ≈ 0,00005 $ par requête |
+| **Désactivé par défaut** : MSK (≈ 0,10 $/h par broker), NAT Gateway, RDS Multi-AZ, KMS client, Route 53 | 0 $ |
+| **Total pour les trois solutions** | **≈ 0,07 $/h, soit moins de 2 $ pour 24 h** |
+
+Un budget AWS (1 $/mois) alerte par e-mail ; toutes les ressources portent le tag
+`Project = threadly`. Le test de charge (§6) a coûté moins d'un centime.
+
+## 5. Sécurité
+
+- **Comptes : Amazon Cognito** (groupes `admin`, `magasinier` ; tout compte connecté est
+  client). L'API vérifie elle-même chaque jeton : RS256 uniquement, signature avec la clé
+  du JWKS de Cognito, émetteur, client et expiration ; un émetteur non Cognito est
+  toujours refusé sur AWS. Chaque route vérifie le rôle (anonyme 401, mauvais rôle 403).
+- **Paiement et PCI DSS** : la carte est saisie dans Stripe.js (iframe Stripe) et ne
+  transite jamais par nos serveurs, ce qui place la boutique dans le périmètre le plus
+  réduit (questionnaire SAQ A). Le serveur relit le paiement chez Stripe (montant, devise,
+  commande) avant de confirmer, avec des clés d'idempotence pour ne jamais créer de
+  doublon.
+- **Secrets** : clé secrète Stripe et mot de passe RDS dans **SSM Parameter Store**
+  (SecureString), lus à l'exécution ; `terraform.tfvars` et `terraform.tfstate`
+  ignorés par git ; aucun secret dans le code ni dans le dépôt.
+- **IAM au moindre privilège** : un rôle par Lambda et un pour les EC2, actions et ARN
+  précis (la Lambda de lecture hybride n'a aucun droit d'écriture) ; les files SQS
+  n'acceptent que le topic SNS ; Grafana local lit la base avec un compte en lecture seule.
+- **Réseau et données** : RDS privé, ALB limité à CloudFront, aucun port SSH (Session
+  Manager), IMDSv2 ; HTTPS imposé ; chiffrement au repos partout ; CloudTrail actif.
+
+Détail (tableau des rôles IAM, en-têtes secrets, chiffrement) : annexe F ; e-mails reçus et
+paiements dans le tableau de bord Stripe : annexe C.7.
+
+## 6. Résultats
+
+**Tests fonctionnels.** `scripts/test_scenario.sh` joue 36 scénarios par
+l'API : catalogue, commandes concurrentes, stock et réservations, comptes et rôles,
+paiement Stripe, workflow jusqu'à `DELIVERED`, facture, e-mails, retours, réappro,
+tableau de bord, rapport quotidien, Athena, X-Ray, Grafana (liste : annexe D).
+
+| Session | Serverless | VM | Hybride |
+|---|---|---|---|
+| Local (Docker), deux passages de suite sans réinitialisation | 36/36 ✅ aux deux passages | 36/36 ✅ aux deux passages | 36/36 ✅ aux deux passages |
+| AWS, session finale du 28/10/2026 (les trois en même temps) | 36/36 ✅ (scénario 35 rejoué, annexe D) | 36/36 ✅ | 36/36 ✅ |
+
+Le scénario 4 de la comparaison ci-dessous vient du premier passage de la session : rejoué sur un déploiement déjà testé, il porte sur un produit de test d'une seule unité (6 commandes seulement, annexe D). Les scénarios propres à un environnement (Athena et X-Ray sur AWS, Grafana en local)
+sont comptés comme réussis « sans objet » ailleurs (annexe D). La session finale s'est
+déroulée sur un second compte (le quota SES du premier était épuisé, annexe E), dont les
+quotas sont **identiques** : 10 exécutions Lambda simultanées, SES en bac à sable
+(200 e-mails par jour, 1 par seconde). Les résultats du scénario 4 et de k6 sont donc
+directement comparables à ceux des sessions précédentes. Toute la session a envoyé
+**96 e-mails** par SES, sous la limite de 200 par jour, contre plus de 270 avant que les
+commandes de test (adresses `example.com`) ne soient plus envoyées (annexe E,
+[`captures/ses_envois.txt`](captures/ses_envois.txt)).
+
+**Test de charge k6** (8 utilisateurs virtuels, 60 s par solution,
+parcours de lecture, solutions testées l'une après l'autre) :
+
+| Solution | Requêtes | Req/s | Médiane | p95 | Max | Réponses attendues | 429 | 5xx |
+|---|---|---|---|---|---|---|---|---|
+| Serverless | 1068 | 13,8 | 52 ms | 272 ms | 514 ms | 100,0 % | 0 | 0 |
+| VM | 1110 | 14,5 | 56 ms | 241 ms | 390 ms | 100,0 % | 0 | 0 |
+| Hybride | 1074 | 14,1 | 47 ms | 251 ms | 1 110 ms | 100,0 % | 0 | 0 |
+
+**Comparaison chiffrée** (session AWS finale) :
+
+| | Serverless | VM | Hybride |
+|---|---|---|---|
+| Commande payée → `DELIVERED` (4 étapes, 5 s simulées chacune) | 18 s | 22 s | 18 s |
+| 23 commandes simultanées (scénario 4, premier passage) | 10 acceptées, **13 refusées par Lambda (429)** ; stock final 8 = 18 − 10 | 18 acceptées, 5 refusées (stock épuisé) | 18 acceptées, 5 refusées (stock épuisé) |
+| Latence de lecture p95 (k6) | 272 ms (médiane 52 ms) | 241 ms (médiane 56 ms) | 251 ms (médiane 47 ms) |
+| Cohérence du stock affiché | immédiate | immédiate | à terme (moins d'une seconde) |
+| Si RDS tombe | non concerné | boutique arrêtée | catalogue et suivi servis, commandes refusées |
+
+## 7. Conclusion et limites
+
+Les trois solutions rendent le même service avec le même code ; leurs différences sont
+celles de l'infrastructure. **Le serverless** est le plus simple et ne coûte rien au
+repos, mais le quota de 10 exécutions Lambda simultanées des comptes récents limite les
+rafales : 13 commandes sur 23 refusées en 429 quand elles arrivent au même instant
+(scénario 4), alors qu'un trafic régulier de 14 requêtes par seconde passe sans refus (k6). **La VM** tient les
+écritures et a la meilleure latence à faible charge, au prix d'un coût horaire et d'une
+exploitation plus lourde. **L'hybride** combine des écritures transactionnelles sans
+quota et des lectures sans serveur, et reste partiellement disponible si RDS tombe ; il
+est le plus complexe (deux modèles à garder cohérents). Pour une boutique de cette taille,
+le serverless suffit ; l'hybride se justifie quand les écritures doivent tenir des pics.
+
+**Limites** (et améliorations proposées) : état Terraform local, sans verrou (backend S3
+avec verrou) ; quota Lambda (demande d'augmentation, *reserved concurrency*) ; RDS
+Single-AZ sans sauvegarde (Multi-AZ en production) ; pas de webhook Stripe (à ajouter en
+production, annexe G) ; SES en *sandbox*, limité à 200 e-mails par jour (demande d'accès
+en production) ; Grafana seulement en local.
+Les services étudiés mais non déployés (Bedrock, Personalize, Forecast, WAF, QuickSight,
+Secrets Manager, OpenSearch, ERP) sont présentés en annexe G.
+
+</div>
+
+<div class="annexes">
+
+## Annexe A. Fonctionnalités et services AWS utilisés
+
+### A.1 Fonctionnalités, par thème
+
+| Thème | Fonctionnalités |
+|---|---|
+| Catalogue et stock | Catalogue avec recherche, filtres et tris ; stock par entrepôt (Paris, Lyon) ; réservations de panier avec expiration ; mouvements (réappro, casse, inventaire, retour) et journal ; alertes de stock bas ; valorisation ; import et export CSV par S3 ; images produit (dépôt présigné, miniatures WebP par Lambda) |
+| Comptes et clients | Comptes Cognito (admin, magasinier, client) ; profil, « mes commandes » ; avis réservés aux acheteurs ; liste de souhaits avec alerte de retour en stock (compte et e-mail) ; codes promo |
+| Commande et paiement | Commande d'un ou plusieurs produits ; paiement Stripe en mode test, avec purge des impayés ; frais de port (standard, express) ; annulation avant expédition, remboursée ; facture PDF |
+| Livraison et retours | Workflow jusqu'à `DELIVERED` (Step Functions, ou worker EC2 pour la VM) ; suivi en temps réel par WebSocket ; e-mails SES ; retours sous 14 jours, réceptionnés puis remboursés ; réapprovisionnement fournisseur automatique |
+| Pilotage | Back-office ; tableau de bord ; rapport quotidien (EventBridge Scheduler) ; audit S3 requêtable par Athena et Glue ; traces X-Ray ; Grafana local |
+| Qualité | 36 scénarios de test sur les trois solutions (local et AWS) ; test de charge k6 ; intégration continue GitHub Actions ; stack Docker locale identique à AWS |
+
+**Cycle de vie d'une commande** (identique partout, défini dans `shop/domain.py`) :
+`PENDING_PAYMENT → CONFIRMED → PACKED → SHIPPED → IN_TRANSIT → DELIVERED`, avec
+`CANCELLED` (avant l'expédition, ou impayée) et `RETURN_REQUESTED → RETURNED`.
+
+**Paiement.** Le PaymentIntent est créé côté serveur avec une clé d'idempotence
+(`threadly-pi-<commande>`) ; le navigateur paie avec Stripe.js ;
+`POST /api/orders/{id}/confirm-payment` relit le paiement chez Stripe. Sans webhook, un
+client peut payer puis fermer son navigateur : la **purge** relit le PaymentIntent avant
+toute annulation, confirme la commande s'il a réussi, et sinon annule le PaymentIntent
+*avant* la commande. Remboursements : clé `threadly-refund-<commande>`.
+`payment_mode = "simulated"` permet de tout tester sans compte Stripe.
+
+**E-mails.** SES est en *sandbox* : tous les e-mails vont à l'adresse vérifiée, avec le
+destinataire prévu en tête du message. L'identité est vérifiée une seule fois, hors
+Terraform (bloc `check`, contrôle dans `up.sh`) : pas de nouvel e-mail de vérification à
+chaque déploiement.
+
+**Pilotage.** Tableau de bord (chiffre d'affaires du jour et des 7 jours, top ventes,
+ruptures, statuts) ; rapport CSV quotidien (ventes, stock, valorisation) déposé dans S3 et
+envoyé par SES, à 6 h ou à la demande ; table Athena `events` partitionnée par
+**projection** (`event_type`, `date`), sans crawler, avec trois requêtes nommées ;
+traces X-Ray des Lambdas et des machines d'état.
+
+### A.2 Services AWS utilisés
+
+| Service | Rôle dans le projet | Solutions |
+|---|---|---|
+| CloudFront (+ CloudFront Function) | Point d'entrée HTTPS, cache du site et des images, routage hybride | toutes |
+| S3 | Site, images, audit, données (CSV, factures, rapports), résultats Athena, CloudTrail | toutes |
+| Lambda (Function URL) | API, traitement, purge, audit, e-mails, miniatures, temps réel, rapport | toutes (VM : audit, e-mails, temps réel) |
+| DynamoDB | Données du serverless, modèle de lecture de l'hybride, connexions WebSocket | serverless, hybride |
+| VPC, ALB, EC2, Auto Scaling | Serveurs d'application sur 2 AZ | VM, hybride |
+| RDS PostgreSQL | Base relationnelle (une base par solution) | VM, hybride |
+| SNS, SQS (+ DLQ) | Bus d'événements, files de traitement | toutes |
+| Step Functions | Workflows de livraison et de réappro | serverless, hybride |
+| EventBridge, EventBridge Scheduler | Purge chaque minute ; rapport quotidien | toutes |
+| Cognito | Comptes et rôles | toutes |
+| API Gateway (WebSocket) | Suivi en temps réel | toutes |
+| SES | E-mails clients et équipe | toutes |
+| SSM Parameter Store, Session Manager | Secrets ; accès aux EC2 sans SSH | toutes |
+| Glue Data Catalog, Athena | Requêtes SQL sur l'audit | toutes |
+| CloudWatch, X-Ray, CloudTrail, Budgets | Logs, alarmes, tableau de bord, traces, audit des appels, budget | toutes |
+| IAM, KMS (option) | Rôles au moindre privilège ; clé client en option | toutes |
+| MSK (option, désactivé) | Streaming Kafka | VM |
+
+## Annexe B. Schémas d'architecture en grand format
+
+Sources Mermaid : [`architecture/`](architecture/) (`serverless.mmd`, `vm.mmd`, `hybrid.mmd`).
+
+<div class="big">
+
+**B.1 Serverless**
 
 ![Architecture serverless](architecture_serverless.png)
 
-- **CloudFront** est la seule porte d'entrée. `/*` est servi depuis le bucket S3 privé via
-  *Origin Access Control*. `/api/*` est transmis à la **Function URL** de la Lambda `api`,
-  avec un en-tête secret `X-Origin-Verify` que la Lambda vérifie. Appeler la Function URL
-  directement renvoie donc 403.
-- **Lambda `api`** (Python 3.12, 256 Mo) lit le catalogue et crée les commandes dans
-  **DynamoDB**. La création est une transaction : décrément conditionnel du stock de chaque
-  ligne (`stock >= quantité`) et écriture de la commande. Si une seule ligne échoue, rien
-  n'est écrit, et l'API renvoie 409.
-- La Lambda publie `ORDER_CREATED` sur **SNS**. Une politique de filtrage
-  (`source = serverless`) envoie l'événement dans la file **SQS `processing`**, dont le délai
-  de 5 s simule le temps d'emballage. La Lambda **`processor`** fait passer la commande à
-  `PACKED`, puis publie `ORDER_PACKED`, qui revient dans la même file et produit `SHIPPED`.
-- Pourquoi ces services : ils ne coûtent rien au repos, montent en charge sans
-  configuration, sont répartis sur plusieurs AZ par AWS, et leur Free Tier est permanent
-  (Lambda, DynamoDB, SNS, SQS).
-
-### 2.2 Solution 2 : machines virtuelles
+**B.2 Machines virtuelles**
 
 ![Architecture VM](architecture_vm.png)
 
-- **VPC** `10.20.0.0/16` sur 2 AZ : sous-réseaux publics pour l'ALB et les EC2,
-  sous-réseaux privés pour RDS. Des endpoints *gateway* S3 et DynamoDB (gratuits) gardent
-  ce trafic dans le réseau AWS.
-- **ALB** sur 2 AZ, limité par son security group à la *prefix list* CloudFront. Une règle
-  d'écoute exige l'en-tête `X-Origin-Verify` ; sans lui, la réponse est 403.
-- **Auto Scaling Group** de 1 à 2 `t3.micro`, réparties sur 2 AZ, avec un *target
-  tracking* à 60 % de CPU et le health check de l'ALB. Chaque instance démarre avec un
-  *user data* qui télécharge l'application depuis S3 et lance un service systemd. Ce
-  service sert le site et l'API, et fait aussi tourner un worker qui lit la file SQS
-  `vm-processing` en *long polling*.
-- **RDS PostgreSQL 16** (`db.t3.micro`, 20 Go, chiffré, non public). Son mot de passe est
-  généré par Terraform et stocké dans **SSM Parameter Store** (SecureString) ; les
-  instances le lisent au démarrage.
-- Pourquoi ces services : c'est l'architecture « classique » à trois tiers. Elle montre
-  tout ce que la solution serverless masque : réseau, répartition de charge, montée en
-  charge, base relationnelle.
-
-### 2.3 Solution 3 : hybride
+**B.3 Hybride**
 
 ![Architecture hybride](architecture_hybrid.png)
 
-**Idée :** les solutions serverless et VM traitent toutes les parties de la boutique de la
-même façon. Or ces parties n'ont pas les mêmes besoins. La solution hybride place chacune
-sur le service qui lui convient, derrière **une seule distribution CloudFront qui route par
-chemin** (`infra/hybrid.tf`) :
+</div>
 
-| Chemin | Destination | Pourquoi cette partie est placée là |
-|---|---|---|
-| `/*` (front) | **S3** + CloudFront, même bucket et même OAC que la solution serverless | Des fichiers statiques : rien à calculer, aucun serveur à faire tourner. |
-| `/api/products*`, `/api/orders/{id}` (catalogue, suivi) | **Lambda `hybrid-read` + DynamoDB** | Les lectures sont les requêtes les plus nombreuses et les plus simples : une clé, une réponse. Lambda et DynamoDB les servent sans serveur, à coût nul au repos. |
-| `POST /api/orders` (commande) | **ALB → EC2 → RDS** | L'écriture est la partie critique : contrôle du stock de plusieurs produits et création de la commande dans une **transaction SQL** (`SELECT … FOR UPDATE`). Sur EC2, elle n'est pas soumise au quota de concurrence Lambda, qui a produit les 429 du scénario 4 (§7.1). |
-| Traitement interne et audit | **Lambda via SNS/SQS**, archivage S3 | Des tâches courtes déclenchées par événement : le cas d'usage type de Lambda. |
+## Annexe C. Captures
 
-**Qui fait foi :**
+Toutes les captures datent de la session AWS finale du 28/10/2026, sauf Grafana et le
+tableau de bord du back-office, pris sur la stack locale. Les graphiques CloudWatch sont produits par l'API
+`GetMetricWidgetImage` ; Step Functions, X-Ray et Athena sont restitués à partir de leurs
+API (historique d'exécution, traces, résultats de requêtes).
 
-- **RDS fait foi pour le stock et la création des commandes.** Le décrément de stock et
-  l'insertion de la commande se font dans la même transaction SQL : c'est la seule
-  écriture « métier », et elle est fortement cohérente. Deux commandes simultanées ne
-  peuvent jamais vendre la même unité.
-- **DynamoDB fait foi pour le statut des commandes** (`CONFIRMED → PACKED → SHIPPED`).
-  Les Lambdas de traitement sont hors VPC et ne peuvent pas joindre RDS, qui est privé ;
-  les placer dans le VPC imposerait une NAT Gateway ou des endpoints d'interface payants.
-  Le statut vit donc dans DynamoDB, où le processor le fait avancer par mises à jour
-  conditionnelles.
-- **Le catalogue affiché dans DynamoDB est une copie** du stock RDS, mise à jour par
-  événement : c'est du **CQRS** (les écritures et les lectures ont chacune leur modèle),
-  avec une **cohérence à terme**. Le stock affiché peut avoir un court retard sur RDS,
-  mais une commande ne peut jamais être acceptée sans stock, puisque le contrôle se fait
-  dans RDS.
 
-**Le flux d'une commande :**
+### C.1 Front des trois solutions (session AWS finale)
 
-1. L'EC2 (service `shop-hybrid`, port 8081, base `shop_hybrid`) fait la transaction SQL,
-   puis publie `ORDER_CREATED` avec `source = hybrid`. L'événement joint le nouveau stock
-   de chaque produit et un **numéro de version**, incrémenté par RDS à chaque modification.
-2. La Lambda `hybrid-projector` crée la commande dans DynamoDB et remplace le stock
-   affiché, **seulement si la version reçue est plus récente**. Un message rejoué ou
-   arrivé dans le désordre ne fait donc jamais revenir le stock en arrière.
-3. La Lambda `hybrid-processor` (le code du processor serverless) reçoit le même
-   événement après le délai d'emballage. Si la commande n'est pas encore dans DynamoDB,
-   elle l'y crée elle-même depuis l'événement (écriture conditionnelle, idempotente), puis
-   la fait passer à `PACKED`, puis à `SHIPPED`.
-4. Juste après le POST, le suivi peut répondre 404 le temps de la projection (0,3 à 1,1 s,
-   mesuré au §7.2). Le front affiche alors la réponse du POST et réessaie toutes
-   les 2 s ; le script de test réessaie aussi.
+<div class="shot col" markdown="1">
 
-**Partagé avec les solutions serverless et VM :**
+![Serverless : catalogue](captures/serverless_1_catalogue.png)
 
-- le VPC, l'ALB, l'Auto Scaling Group et ses instances, ainsi que l'instance RDS (une
-  base par solution, `shop` et `shop_hybrid`) et son mot de passe SSM ;
-- le bucket web, l'OAC, le front, le topic SNS et toute la chaîne d'audit ;
-- le code des Lambdas `api` et `processor`, paramétré par variables d'environnement
-  (`READ_ONLY`, `BACKEND`, `SOURCE`) ;
-- `app.py`, lancé en 2e service systemd sur les mêmes EC2.
+Serverless : catalogue
 
-**Propre à la solution hybride :**
+</div>
 
-- 1 distribution CloudFront ;
-- 1 target group et 1 règle ALB. Cette règle exige **l'en-tête secret CloudFront
-  `X-Origin-Verify` et `X-Shop: hybrid`**, ajoutés tous deux par la distribution hybride ;
-  elle est évaluée avant celle de la solution VM ;
-- 3 Lambdas, dont une seule avec un code qui lui est propre (le projecteur, environ
-  60 lignes) ;
-- 2 files SQS avec leur DLQ ;
-- 2 tables DynamoDB.
+<div class="shot col" markdown="1">
 
-Grâce à ce partage, **la solution hybride n'ajoute aucune ressource facturée à l'heure**.
+![VM : catalogue](captures/vm_1_catalogue.png)
 
-### 2.4 Parties communes
+VM : catalogue
 
-- **Le bus d'événements** est partagé. Chaque événement porte un attribut `source`
-  (`serverless`, `vm` ou `hybrid`), et les politiques de filtrage SNS dirigent chaque
-  événement vers les bonnes files. C'est du *pub/sub* : chaque solution a ses propres
-  consommateurs, sans dépendre des producteurs des autres.
-- **L'audit** est commun : toutes les files SQS ont une DLQ, et la Lambda `audit` écrit
-  chaque événement dans `s3://<audit>/events/event_type=…/date=…/<id>.json`.
-- **Le cycle de vie** d'une commande est le même dans les trois solutions :
-  `CONFIRMED → PACKED → SHIPPED`. Les mises à jour sont conditionnelles, sur le statut
-  attendu, donc un message livré deux fois n'applique jamais deux fois la même transition.
+</div>
 
-### 2.5 Comparaison des trois solutions
+<div class="shot col" markdown="1">
 
-Les mesures viennent des tests du 27/10/2026, sur les trois solutions déployées et testées
-en même temps (§7.1).
+![Hybride : catalogue](captures/hybrid_1_catalogue.png)
 
-| | Serverless | VM | Hybride |
-|---|---|---|---|
-| **Coût au repos** | 0 $ : rien ne tourne sans requête | ≈ 0,07 $/h : ALB, EC2, RDS, IPv4, payés même sans trafic | ≈ 0,07 $/h pour l'ALB, l'EC2 et RDS, partagés avec la VM : 0 $ de plus quand les deux sont déployées |
-| **Coût à l'usage** | à la requête, couvert par le Free Tier permanent | fixe jusqu'à saturation, puis une instance de plus | lectures à la requête (Lambda), écritures sur une capacité fixe (EC2) |
-| **Commande jusqu'à `SHIPPED`** | 15 s | 12 s | 12 s |
-| **23 commandes simultanées** | 13 refusées par Lambda (429), le quota de 10 du compte étant atteint | toutes traitées (201 ou 409) | toutes traitées : les écritures passent par l'EC2 |
-| **Lectures en pic** | limitées par le même quota Lambda | limitées par le CPU de l'EC2 | limitées par le quota Lambda, mais sans gêner les commandes |
-| **Cohérence du stock affiché** | immédiate | immédiate | à terme : 0,3 à 1,1 s après la correction du §7.2 |
-| **Haute disponibilité** | multi-AZ par défaut (Lambda, DynamoDB) | ALB et ASG sur 2 AZ, mais RDS en Single-AZ | lectures multi-AZ (Lambda, DynamoDB) ; commandes sur 2 AZ, mais RDS en Single-AZ. Si RDS tombe, **le catalogue et le suivi restent servis** ; seules les nouvelles commandes échouent (par conception, non testé) |
-| **Complexité** | faible : 3 Lambdas, 2 tables | moyenne : réseau, ALB, ASG, systemd, base relationnelle | la plus forte : deux modèles de données à garder cohérents, projection versionnée, deux consommateurs du même événement, routage CloudFront et ALB par en-tête |
+Hybride : catalogue
 
-**Bilan :** l'hybride combine la meilleure tenue en écriture (EC2 et SQL) et des lectures
-sans serveur. Il est aussi le seul des trois à rester partiellement disponible quand la base
-relationnelle tombe. En contrepartie, il est nettement plus complexe : la cohérence à terme
-a révélé deux problèmes de latence et d'ordre des messages (§7.2). Le premier existait déjà
-dans le serverless, où il passait inaperçu. Pour une boutique de cette taille, la solution serverless reste la plus
-simple. L'hybride se justifie quand les écritures doivent tenir des pics, ou quand le
-modèle relationnel est indispensable (transactions sur plusieurs tables, reporting SQL).
+</div>
 
-## 3. Adaptation au Free Tier
+<div class="shot col" markdown="1">
 
-### 3.1 Ce qui est désactivé ou remplacé
+![Serverless : paiement par carte (Stripe Elements, carte de test 4242)](captures/serverless_2_paiement.png)
 
-| Élément | Choix par défaut | Raison | Pour l'activer |
-|---|---|---|---|
-| **MSK (Kafka)** | désactivé | Aucun Free Tier, environ 0,10 $/h par broker, plus 20 à 30 min de création. Le code (pont SQS → Kafka sur EC2, statistiques en direct) est prêt. | `enable_msk = true` |
-| API Gateway | remplacé par une **Lambda Function URL** | Gratuite, et suffisante derrière CloudFront | — |
-| NAT Gateway | aucune | Environ 0,05 $/h. Les EC2 sont en sous-réseau public, fermées par security group, et S3/DynamoDB passent par des endpoints *gateway* gratuits. | — |
-| RDS Multi-AZ | Single-AZ, sans sauvegarde automatique | Multi-AZ double le prix | `db_multi_az = true` |
-| 2e instance EC2 permanente | `vm_min_size = 1` (l'ASG peut monter à 2) | 750 h/mois couvrent une seule instance | `vm_min_size = 2` |
-| KMS clé client | clés gérées par AWS | Une clé client coûte 1 $/mois | `enable_kms_cmk = true` |
-| Route 53 + ACM | pas de domaine, URLs `*.cloudfront.net` | Une zone hébergée coûte 0,50 $/mois | `route53_zone_name` |
-| DynamoDB | capacité provisionnée faible : 5 RCU, et 2 ou 5 WCU par table | Les 4 tables (serverless et hybride) totalisent 20 RCU / 14 WCU, sous les 25 RCU/WCU gratuits à vie | — |
-| Logs CloudWatch | rétention 3 jours | Limite le stockage | `log_retention_days` |
+Serverless : paiement par carte (Stripe Elements, carte de test 4242)
 
-### 3.2 Coût estimé
+</div>
 
-Le reste du temps, l'infrastructure n'existe pas : on la crée avec `./up.sh` pour
-travailler ou faire une démo, puis on la supprime avec `./down.sh`. Ordre de grandeur pour
-**une heure de démo** en eu-west-3, au prix public et hors crédits :
+<div class="shot col" markdown="1">
 
-| Poste | Coût horaire approximatif |
+![VM : paiement par carte (Stripe Elements, carte de test 4242)](captures/vm_2_paiement.png)
+
+VM : paiement par carte (Stripe Elements, carte de test 4242)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Hybride : paiement par carte (Stripe Elements, carte de test 4242)](captures/hybrid_2_paiement.png)
+
+Hybride : paiement par carte (Stripe Elements, carte de test 4242)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Serverless : commande suivie jusqu'à la livraison](captures/serverless_3_livree.png)
+
+Serverless : commande suivie jusqu'à la livraison
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![VM : commande suivie jusqu'à la livraison](captures/vm_3_livree.png)
+
+VM : commande suivie jusqu'à la livraison
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Hybride : commande suivie jusqu'à la livraison](captures/hybrid_3_livree.png)
+
+Hybride : commande suivie jusqu'à la livraison
+
+</div>
+
+
+### C.2 Back-office
+
+<div class="shot col" markdown="1">
+
+![Tableau de bord (admin) : chiffre d'affaires, top ventes, ruptures, statuts (stack locale, solution VM)](captures/backoffice_tableau_de_bord.png)
+
+Tableau de bord (admin) : chiffre d'affaires, top ventes, ruptures, statuts (stack locale, solution VM)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Retours à réceptionner et bons de commande fournisseur](captures/backoffice_retours_bons.png)
+
+Retours à réceptionner et bons de commande fournisseur
+
+</div>
+
+
+### C.3 Step Functions
+
+<div class="shot half" markdown="1">
+
+![Exécution réussie de la machine fulfillment (historique de l'exécution, délais réels)](captures/step_functions_execution.png)
+
+Exécution réussie de la machine fulfillment (historique de l'exécution, délais réels)
+
+</div>
+
+<div class="shot" markdown="1">
+
+![Exécutions démarrées et réussies par machine (CloudWatch)](captures/cloudwatch_step_functions.png)
+
+Exécutions démarrées et réussies par machine (CloudWatch)
+
+</div>
+
+
+### C.4 CloudWatch (heures de Paris)
+
+<div class="shot" markdown="1">
+
+![Invocations des Lambdas, et refus 429 de l'API serverless](captures/cloudwatch_lambda.png)
+
+Invocations des Lambdas, et refus 429 de l'API serverless
+
+</div>
+
+<div class="shot" markdown="1">
+
+![Messages reçus par file SQS](captures/cloudwatch_sqs.png)
+
+Messages reçus par file SQS
+
+</div>
+
+<div class="shot" markdown="1">
+
+![Événements publiés sur SNS](captures/cloudwatch_sns.png)
+
+Événements publiés sur SNS
+
+</div>
+
+<div class="shot" markdown="1">
+
+![EC2 + RDS (VM et hybride) : requêtes ALB, CPU, connexions](captures/cloudwatch_ec2_rds.png)
+
+EC2 + RDS (VM et hybride) : requêtes ALB, CPU, connexions
+
+</div>
+
+
+### C.5 X-Ray
+
+<div class="shot half" markdown="1">
+
+![Carte des services tracés (appels et temps moyen par service)](captures/xray_service_map.png)
+
+Carte des services tracés (appels et temps moyen par service)
+
+</div>
+
+
+### C.6 Grafana (stack locale)
+
+<div class="shot" markdown="1">
+
+![Tableau de bord « ventes et stock » provisionné, base de la VM](captures/grafana_ventes_stock.png)
+
+Tableau de bord « ventes et stock » provisionné, base de la VM
+
+</div>
+
+
+### C.7 E-mails et paiement (boîte de réception, tableau de bord Stripe)
+
+E-mails réellement reçus pendant la session finale, envoyés par la Lambda `mailer` via SES (bac à sable : tous redirigés vers l'adresse vérifiée, le destinataire prévu en tête du message), et paiements de test enregistrés par Stripe.
+
+<div class="shot col" markdown="1">
+
+![Confirmation de commande, facture PDF jointe](captures/email_confirmation_facture.png)
+
+Confirmation de commande, facture PDF jointe
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Expédition : transporteur et numéro de suivi](captures/email_expedition.png)
+
+Expédition : transporteur et numéro de suivi
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Retour enregistré : étiquette retour](captures/email_retour_enregistre.png)
+
+Retour enregistré : étiquette retour
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Remboursement après réception du retour](captures/email_remboursement.png)
+
+Remboursement après réception du retour
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Alerte de retour en stock (liste de souhaits)](captures/email_retour_en_stock.png)
+
+Alerte de retour en stock (liste de souhaits)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Alerte de stock bas (équipe)](captures/email_stock_bas.png)
+
+Alerte de stock bas (équipe)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Bon de commande fournisseur (réappro automatique)](captures/email_bon_de_commande.png)
+
+Bon de commande fournisseur (réappro automatique)
+
+</div>
+
+<div class="shot col" markdown="1">
+
+![Rapport quotidien, CSV joint](captures/email_rapport_quotidien.png)
+
+Rapport quotidien, CSV joint
+
+</div>
+
+<div class="shot" markdown="1">
+
+![Tableau de bord Stripe (mode test) : paiements Threadly réussis et un remboursé](captures/stripe_paiements.png)
+
+Tableau de bord Stripe (mode test) : paiements « Threadly ORD-… » par carte de test 4242, réussis, et un remboursement
+
+</div>
+
+### C.8 Captures textuelles (API AWS)
+
+| Fichier | Contenu |
 |---|---|
-| ALB (partagé par les solutions VM et hybride) | ≈ 0,025 $ + LCU (négligeable ici) |
-| EC2 `t3.micro` (1 instance, un service par solution) | ≈ 0,012 $ |
-| RDS `db.t3.micro` (une base par solution) | ≈ 0,02 $ |
-| IPv4 publiques (ALB 2 AZ + EC2) | ≈ 0,015 $ |
-| Lambda, DynamoDB, SNS, SQS, S3, CloudFront, CloudWatch | 0 $ (Free Tier permanent, volumes de test) |
-| **Total pour les trois solutions** | **≈ 0,07 $/h, soit moins de 2 $ pour 24 h** |
+| [`captures/step_functions_executions.txt`](captures/step_functions_executions.txt) | Step Functions : historique des dernières exécutions |
+| [`captures/xray_services.txt`](captures/xray_services.txt) | X-Ray : services et traces |
+| [`captures/athena_resultats.txt`](captures/athena_resultats.txt) | Athena : les trois requêtes nommées et leurs résultats |
+| [`captures/audit_s3_liste.txt`](captures/audit_s3_liste.txt) | Audit S3 : nombre de fichiers par type et liste complète |
+| [`captures/audit_s3_exemple.txt`](captures/audit_s3_exemple.txt) | Audit S3 : un événement complet |
+| [`captures/ec2_rds_ressources.txt`](captures/ec2_rds_ressources.txt) | EC2 et RDS : relevés de mémoire et de connexions |
+| [`captures/ses_envois.txt`](captures/ses_envois.txt) | SES : e-mails envoyés par la session finale (96), la première tentative (270) et chaque passage local |
 
-Ces montants sont des estimations : les tarifs exacts sont à vérifier sur la page de prix
-de chaque service.
+Extrait de [`captures/athena_resultats.txt`](captures/athena_resultats.txt) (chiffre d'affaires par jour et délai commande → livraison) :
 
-Les **alarmes CloudWatch** sont un petit poste en plus : les trois solutions en comptent
-12 (5 DLQ, 6 Lambdas, 1 ALB), pour 10 gratuites. Les 2 en trop coûtent 0,10 $ par mois
-chacune, au prorata des heures d'existence, soit quelques centimes au plus.
+```
+delai-commande-livraison
+État : SUCCEEDED, données lues : 435.6 Ko, durée : 1387 ms
 
-Un **budget AWS** (`threadly-dev-monthly`, 1 $/mois par défaut) envoie un e-mail quand la
-prévision dépasse 80 %. Toutes les ressources portent le tag `Project = threadly`, qui
-permet de filtrer dans Cost Explorer.
+  source     | commandes_livrees | delai_moyen_s
+  -----------+-------------------+--------------
+  hybrid     | 47                | 19.4         
+  serverless | 49                | 21.6         
+  vm         | 24                | 23.1
+```
+```
+chiffre-affaires-par-jour
+État : SUCCEEDED, données lues : 152.3 Ko, durée : 1068 ms
 
-### 3.3 Le modèle à crédits du compte
+  date       | source     | encaisse           | rembourse          | chiffre_affaires  
+  -----------+------------+--------------------+--------------------+-------------------
+  2026-10-28 | hybrid     | 3059.7000000000016 | 299.59999999999997 | 2760.1000000000013
+  2026-10-28 | serverless | 3188.6000000000013 | 299.59999999999997 | 2889.000000000001 
+  2026-10-28 | vm         | 1566.7000000000007 | 149.8              | 1416.9000000000005
+```
 
-Le compte a été créé le 22 octobre 2026. Il dépend donc du **nouveau Free Tier**, en
-vigueur depuis juillet 2025 :
+## Annexe D. Sorties détaillées des tests et de k6
 
-- **Le plan gratuit dure 6 mois** et donne des **crédits** en dollars : 100 $ à
-  l'inscription, et jusqu'à 100 $ de plus en explorant certains services. Ces crédits
-  remplacent les anciens « 12 mois gratuits » par service (750 h EC2, 750 h RDS, etc.).
-  Ce qui n'est pas gratuit à vie (ALB, EC2, RDS, IPv4 publiques) est payé avec ces crédits.
-- **Les offres « toujours gratuites » restent valables** : 1 M de requêtes Lambda,
-  25 Go et 25 RCU/WCU DynamoDB, 1 M de publications SNS, 1 M de requêtes SQS, 1 To
-  CloudFront, etc.
-- **État du compte**, lu avec `aws freetier get-account-plan-state` : plan `FREE`, statut
-  `ACTIVE`, **179,97 $ de crédits restants**, expiration le **22/04/2027**.
-- **Conséquence pour le projet :** les ressources « payantes » des solutions VM et
-  hybride (ALB, EC2, RDS) ne facturent rien tant que les crédits durent. Le `down` systématique reste la règle, pour
-  ne pas les consommer inutilement.
-- **Limite des comptes récents :** ce plan applique un quota de **10 exécutions Lambda
-  simultanées**, partagé par toutes les Lambdas du compte. Cela a une conséquence directe
-  sur le test de charge (§7.1), et c'est l'une des raisons de la solution hybride.
-
-## 4. Sécurité
-
-### 4.1 Modèle de responsabilité partagée
-
-AWS est responsable de la sécurité *du* cloud : datacenters, matériel, hyperviseur,
-réseau physique, et, pour les services managés, l'OS et les correctifs de Lambda, RDS,
-DynamoDB, SNS et SQS. Nous sommes responsables de la sécurité *dans* le cloud :
-
-| Domaine | Ce que nous avons configuré |
-|---|---|
-| Identités et accès | Un rôle IAM par Lambda et un pour les EC2, au moindre privilège ; pas de clé d'accès sur les instances |
-| Réseau | RDS en sous-réseau privé, ouvert seulement au security group des EC2 ; ALB limité à CloudFront ; pas de port SSH ouvert |
-| Données | Chiffrement au repos partout ; HTTPS imposé par CloudFront (`redirect-to-https`) |
-| OS des EC2 | Amazon Linux 2023, IMDSv2 obligatoire, accès par Session Manager uniquement |
-| Application | Validation des entrées (quantités, tailles, e-mail), en-tête secret d'origine |
-| Traçabilité | CloudTrail, logs CloudWatch, alarmes |
-
-### 4.2 IAM : moindre privilège
-
-Chaque rôle n'a que les actions nécessaires, sur les ressources nécessaires (ARN précis,
-jamais `*`) :
-
-| Rôle | Droits |
-|---|---|
-| Lambda `api` | `dynamodb:GetItem/Scan/BatchGetItem/UpdateItem/PutItem/ConditionCheckItem` sur les 2 tables (les actions dont la transaction a besoin), `sns:Publish` sur le topic |
-| Lambda `processor` | `dynamodb:UpdateItem/GetItem` sur la table `orders`, `sns:Publish`, lecture/suppression de **sa** file SQS |
-| Lambda `audit` | `s3:PutObject` sur `audit/events/*` uniquement, lecture de **sa** file SQS |
-| EC2 | `s3:GetObject` sur `web/*` et `vm-app/*`, `ssm:GetParameter` sur le seul mot de passe, lecture de **sa** file SQS, `sns:Publish` ; politique gérée `AmazonSSMManagedInstanceCore` pour Session Manager |
-| Lambda `hybrid-read` | `dynamodb:GetItem/Scan` seulement, sur les 2 tables hybrides : **aucune écriture possible**. Une variable `READ_ONLY` désactive aussi la route POST du code |
-| Lambda `hybrid-processor` | `dynamodb:UpdateItem/GetItem/PutItem` sur la seule table `hybrid-orders`, `sns:Publish`, **sa** file SQS |
-| Lambda `hybrid-projector` | `dynamodb:UpdateItem` sur `hybrid-products`, `dynamodb:PutItem` sur `hybrid-orders`, **sa** file SQS ; pas de `sns:Publish` |
-
-Les files SQS n'acceptent des messages que du topic SNS (`aws:SourceArn`). Le bucket web
-n'accepte que les distributions CloudFront serverless et hybride (`AWS:SourceArn`).
-Côté ALB, la règle hybride exige à la fois l'en-tête secret et `X-Shop: hybrid` : il ne
-suffit pas de connaître le nom d'en-tête `X-Shop` pour atteindre le service hybride.
-
-### 4.3 Chiffrement
-
-- **Au repos :**
-  - DynamoDB : SSE ;
-  - RDS : `storage_encrypted` ;
-  - SNS : `alias/aws/sns` ;
-  - SQS : SSE gérée ;
-  - S3 : SSE-S3 ;
-  - mot de passe RDS : SSM SecureString.
-
-  Avec `enable_kms_cmk = true`, tout passe sur une clé KMS client, avec rotation.
-- **En transit :** HTTPS entre le navigateur et CloudFront. Entre CloudFront et la Lambda,
-  ainsi que pour tous les appels aux API AWS, les échanges passent aussi en TLS.
-
-### 4.4 CloudTrail
-
-Un trail régional (avec les services globaux) écrit dans un bucket dédié, avec validation
-d'intégrité des fichiers et expiration à 30 jours. Le §7.3 montre son utilité : c'est lui
-qui a permis de comprendre un incident de déploiement.
-
-## 5. Haute disponibilité et résilience
-
-| | Serverless | VM | Hybride |
-|---|---|---|---|
-| Entrée | CloudFront (réseau mondial d'*edge locations*) | CloudFront + ALB sur 2 AZ | CloudFront ; ALB sur 2 AZ pour les commandes |
-| Calcul | Lambda, multi-AZ par conception | ASG sur 2 AZ ; une instance non saine (health check ALB) est remplacée automatiquement ; montée à 2 instances au-delà de 60 % de CPU | Lambda pour les lectures et le traitement ; ASG de la VM pour les commandes |
-| Données | DynamoDB, répliqué sur 3 AZ | RDS Single-AZ (point faible assumé pour le coût ; `db_multi_az = true` ajoute un standby synchrone avec bascule automatique) | RDS Single-AZ pour les écritures, DynamoDB multi-AZ pour les lectures et le statut |
-| Découplage | SNS → SQS : si le traitement est en panne, les messages attendent dans la file | identique | identique, avec en plus la projection : si elle s'arrête, le stock affiché prend du retard sans rien perdre, et il rattrape RDS au redémarrage |
-| Reprise sur erreur | 3 tentatives, puis Dead Letter Queue ; `ReportBatchItemFailures` ne rejoue que les messages en échec | 3 tentatives, puis DLQ | identique ; projection idempotente et versionnée |
-| Supervision | Alarmes e-mail : DLQ non vide, erreurs Lambda, aucune cible saine derrière l'ALB ; tableau de bord CloudWatch | identique | identique |
-
-Les solutions serverless et VM sont indépendantes : si la solution VM tombe (par exemple
-RDS), la solution serverless continue de servir. L'hybride partage l'EC2 et l'instance RDS
-de la VM. Une panne de RDS bloque donc les commandes des deux, mais le catalogue et le
-suivi de l'hybride restent servis par DynamoDB.
-
-## 6. Comparaison des alternatives
-
-| Choix retenu | Alternative | Comparaison |
-|---|---|---|
-| **SNS + SQS** | **EventBridge** | EventBridge offre un filtrage plus riche, un schéma d'événements, l'archivage et le rejeu, et des cibles nombreuses. SNS + SQS est plus simple, entièrement gratuit à notre volume, et la file SQS donne gratuitement le délai d'emballage et la DLQ. EventBridge serait le bon choix si d'autres équipes s'abonnaient aux événements. |
-| **SNS (+ option MSK)** | **Kinesis Data Streams** / **MSK** | Le streaming conserve un journal ordonné et rejouable, qui peut être lu par plusieurs consommateurs à leur rythme, ce qui est utile pour les statistiques en temps réel. Kinesis coûte environ 0,015 $/h par shard ; MSK environ 0,10 $/h par broker, avec au moins 2 brokers. Ni l'un ni l'autre n'est gratuit : MSK est donc codé mais désactivé. Kinesis serait l'option managée la moins chère. |
-| **RDS PostgreSQL** | **Aurora Serverless v2** | Aurora apporte un stockage réparti sur 3 AZ, une bascule rapide et une capacité élastique. Mais il ne descend pas à 0 ACU de façon gratuite et n'a pas de Free Tier, alors que RDS `db.t3.micro` est couvert par les crédits. |
-| **EC2 + ASG** | **ECS sur Fargate** | Fargate supprime la gestion de l'OS et de l'AMI : on déploie un conteneur. Mais il facture le vCPU et la mémoire à l'heure, sans Free Tier, et l'exercice demandait explicitement du Compute EC2. |
-| **Lambda Function URL** | **API Gateway (HTTP API)** | API Gateway ajoute l'authentification (JWT, Cognito), le *throttling* par client, les clés d'API et un domaine. Son Free Tier dure 12 mois (1 M d'appels). Derrière CloudFront, la Function URL suffit et reste gratuite. |
-| **DynamoDB provisionné 5/5** | DynamoDB à la demande | Le mode à la demande absorbe les pics sans réglage, mais n'est pas couvert par les 25 RCU/WCU gratuites. |
-| **CloudFront** (URL `cloudfront.net`) | Route 53 + ACM | Un domaine propre coûte la zone (0,50 $/mois) et le nom de domaine ; c'est prévu dans `dns.tf`. |
-
-## 7. Déroulement du projet
-
-Le projet a été construit de manière itérative, comme le recommande le sujet :
-
-1. l'infrastructure réseau et la solution VM ;
-2. les données (RDS, DynamoDB) ;
-3. le bus d'événements et l'audit ;
-4. la solution serverless ;
-5. la supervision, la sécurité et les tests ;
-6. pour itérer sans coût, une **stack locale Docker**. Elle faisait d'abord tourner la
-   solution VM avec PostgreSQL et moto, qui simulait SNS, SQS et SSM ;
-7. la solution hybride, qui s'appuie sur les ressources des deux autres et sur leurs
-   résultats de tests (notamment les 429 du serverless) ;
-8. l'extension de la stack locale aux **trois solutions**, avec LocalStack et nginx
-   (§8).
-
-### 7.1 Tests
-
-`scripts/test_scenario.sh` joue 5 scénarios par l'API et affiche ✅ / ❌ pour chacun. Il
-fonctionne en local ou contre l'URL de l'une des trois solutions :
+### D.1 Liste des scénarios
 
 | # | Scénario | Ce qu'il vérifie |
 |---|---|---|
-| 1 | Catalogue | `GET /api/products` renvoie les 12 produits |
-| 2 | Commande de 2 produits | `CONFIRMED → PACKED → SHIPPED`, transporteur et numéro de suivi, stock décrémenté |
-| 3 | Stock insuffisant | `409`, stock inchangé |
-| 4 | Commandes simultanées au-delà du stock | Chaque réponse est `201` ou `409` ; stock final = stock initial − commandes acceptées, jamais négatif. Les `429` sont comptés à part, en ⚠️ « limités par Lambda » |
-| 5 | Audit S3 (AWS) | Les 3 événements de la commande sont dans le bucket d'audit |
+| 1 | Afficher le catalogue | Le front et l'API lisent la base (DynamoDB ou RDS) via CloudFront |
+| 2 | Commande de 2 produits payée, suivie jusqu'à `DELIVERED` | Paiement par carte de test, puis toute la chaîne : `PENDING_PAYMENT` → `CONFIRMED` → `PACKED` → `SHIPPED` → `IN_TRANSIT` → `DELIVERED` (Step Functions ou worker EC2), transporteur, n° de suivi, stock décrémenté |
+| 3 | Commande supérieure au stock | Refus `409`, sans aucune modification du stock |
+| 4 | Commandes simultanées dépassant le stock | Le décrément est atomique (transaction DynamoDB / `SELECT … FOR UPDATE`) : le stock final vaut exactement `stock initial − commandes acceptées`, sans jamais passer sous 0, et chaque requête reçoit `201` ou `409`. Les `429` (requête refusée par Lambda, quota de concurrence du compte atteint) sont comptés à part, signalés par ⚠️, sans faire échouer le scénario |
+| 5 | Fichiers d'audit S3 | Les 6 événements de la commande du scénario 2 (`ORDER_CREATED` à `ORDER_DELIVERED`) sont archivés par la Lambda audit dans `s3://<audit_bucket>/events/` |
+| 6 | Back-office | Routes admin refusées sans jeton (401) ; création, modification, archivage d'un produit (absent du catalogue, commande refusée) |
+| 7 | Multi-entrepôts | Une commande de 4 unités est servie par Paris (3) puis Lyon (1) |
+| 8 | Journal des mouvements | Réappro, casse, inventaire et vente dans l'ordre ; une casse supérieure au stock est refusée (409) |
+| 9 | Annulation | Le stock est remis ; seconde annulation et annulation d'une commande expédiée refusées (409) |
+| 10 | Réservations | Le stock réservé par un panier est refusé aux autres ; la commande du panier le consomme ; libération manuelle ; expiration (10 s) |
+| 11 | Réservations simultanées | 9 paniers pour 6 unités : jamais plus de 6 réservées, disponible et réservé cohérents |
+| 12 | Alerte stock bas | `STOCK_LOW` publié sur SNS une seule fois au franchissement du seuil, archivé dans l'audit S3 |
+| 13 | CSV via S3 | Export par lien présigné, modification, dépôt par lien présigné, import (1 produit modifié, 1 créé) |
+| 14 | Valorisation | Valeur = stock physique × prix de revient, par produit, par entrepôt et au total |
+| 15 | Comptes et rôles | Client 403 sur l'admin ; magasinier : stock oui, catalogue et promos non ; 6 jetons forgés refusés (401), dont un jeton du fournisseur local ; `infra/` ne référence pas le fournisseur local |
+| 16 | Recherche et filtres | Texte, catégorie, prix minimum et maximum, en stock, tris |
+| 17 | Codes promo | Remise en % ou en €, limite d'utilisations, expiration ; 4 commandes simultanées sur un code à usage unique : 1 seule acceptée |
+| 18 | Avis | Réservés aux clients ayant commandé le produit ; un avis par client ; note moyenne à jour |
+| 19 | Liste de souhaits | Alerte unique quand un produit souhaité revient en stock |
+| 20 | Mes commandes | Chaque client ne voit que ses commandes |
+| 21 | Images produit | Formulaire de dépôt présigné réservé à l'admin (type imposé par S3), miniatures WebP 160 et 480 px par la Lambda thumbnailer, faux fichier ignoré, original non public |
+| 22 | Temps réel (AWS) | WebSocket : statuts de `ORDER_PAID` à `ORDER_DELIVERED` poussés sans polling, alerte de retour en stock poussée au client connecté, jeton forgé refusé ; non applicable en local |
+| 23 | Paiement par carte | 402 sans paiement, carte refusée (`card_declined`), paiement vérifié côté serveur (statut, montant, devise, commande), confirmation rejouée sans effet, `client_secret` jamais exposé par `GET` ; en local : un seul PaymentIntent par commande (clé d'idempotence) |
+| 24 | Purge des impayés | Commande payée chez Stripe sans retour sur la boutique : confirmée par la purge ; commande jamais payée : PaymentIntent annulé chez Stripe puis commande annulée, stock rendu |
+| 25 | Frais de port | Standard 4,90 € (offerte dès 60 € d'articles après remise), express 9,90 €, mode inconnu refusé |
+| 26 | Workflow de livraison | 5 étapes jusqu'à `DELIVERED` (Step Functions en serverless et hybride, worker EC2 pour la VM) ; commande payée puis annulée : remboursée une fois, le workflow s'arrête |
+| 27 | Facture PDF | Réservée au client de la commande (et à l'admin), une fois payée : anonyme 401, impayée 409, autre client 403 ; PDF valide par lien présigné |
+| 28 | E-mails SES | Confirmation (facture jointe), expédition, livraison et alerte de retour en stock (liste de souhaits) envoyées ; LocalStack en local, journaux de la Lambda `mailer` sur AWS |
+| 29 | Retour et remboursement | Commande livrée : retour demandé par son client (anonyme 401, autre client 403, motif inconnu 400, seconde demande 409), réceptionné par le magasinier : `RETURNED`, mouvement `RETURN`, stock remis, remboursée une fois (seconde réception 409), e-mails « retour enregistré » et « remboursement » |
+| 30 | Retour refusé | Commande non livrée : 409 ; règle des 14 jours après la livraison (13 jours : accepté, 15 jours : refusé) |
+| 31 | Réappro fournisseur | Deux passages sous le seuil : un seul bon de commande, livré après le délai fournisseur (mouvement `RESTOCK` réf. du bon), stock remonté une fois ; Step Functions en serverless, worker EC2 pour la VM et l'hybride |
+| 32 | Tableau de bord | Back-office (admin, magasinier ; anonyme 401, client 403) : chiffre d'affaires du jour et des 7 jours, top ventes, ruptures et stocks bas, commandes par statut, mis à jour par une commande |
+| 33 | Rapport quotidien | CSV (ventes 24 h, stock, valorisation) dans S3 et envoyé par SES, CSV joint ; à la demande (admin seulement) et par la cible d'EventBridge Scheduler (Lambda `reporter`, ou worker EC2 pour la VM) |
+| 34 | Athena + Glue | Table `events` partitionnée par projection (event_type, date) ; 3 requêtes nommées : chiffre d'affaires par jour, délai commande → livraison, annulations (AWS seulement) |
+| 35 | X-Ray | Traces des Lambdas et des machines Step Functions (AWS seulement) |
+| 36 | Grafana (local) | Tableau de bord provisionné, source PostgreSQL en lecture seule : le chiffre d'affaires du jour lu par Grafana est celui du back-office (VM) |
 
-Pour l'hybride, le stock affiché rattrape RDS de façon asynchrone. Le script relit donc le
-stock jusqu'à la valeur attendue, 20 s au plus, avant de conclure. Il tolère aussi un 404
-du suivi juste après la création.
+### D.2 Sorties complètes
 
-**Résultats sur AWS** (27/10/2026, vers 13:35 UTC). Les **trois solutions ont été testées
-en même temps**, ce qui charge l'EC2 partagée et le quota Lambda commun. Les sorties
-complètes sont dans [`captures/tests_vm.txt`](captures/tests_vm.txt),
-[`captures/tests_serverless.txt`](captures/tests_serverless.txt) et
-[`captures/tests_hybrid.txt`](captures/tests_hybrid.txt) :
+| Fichier | Contenu |
+|---|---|
+| [`captures/tests_aws_serverless.txt`](captures/tests_aws_serverless.txt) | Session AWS finale, Serverless |
+| [`captures/tests_aws_vm.txt`](captures/tests_aws_vm.txt) | Session AWS finale, VM |
+| [`captures/tests_aws_hybrid.txt`](captures/tests_aws_hybrid.txt) | Session AWS finale, Hybride |
+| [`captures/tests_local_serverless.txt`](captures/tests_local_serverless.txt) | Stack locale, Serverless (second passage sans réinitialisation) |
+| [`captures/tests_aws_premier_passage.txt`](captures/tests_aws_premier_passage.txt) | Session AWS finale, premier passage du serverless et de l'hybride (scénario 4 de la comparaison, échecs expliqués ci-dessous) |
+| [`captures/tests_local_vm.txt`](captures/tests_local_vm.txt) | Stack locale, VM (second passage sans réinitialisation) |
+| [`captures/tests_local_hybrid.txt`](captures/tests_local_hybrid.txt) | Stack locale, Hybride (second passage sans réinitialisation) |
 
-| Scénario | VM | Serverless | Hybride |
-|---|---|---|---|
-| 1. Catalogue | ✅ | ✅ | ✅ |
-| 2. Commande → `SHIPPED` | ✅ en 12 s | ✅ en 15 s | ✅ en 12 s |
-| 3. Stock insuffisant | ✅ | ✅ | ✅ |
-| 4. Commandes simultanées | ✅ 11 acceptées, 5 refusées, stock 0 | ✅ ⚠️ 6 acceptées, 4 refusées, **13 limitées par Lambda (429)** ; stock 12 = 18 − 6 | ✅ 11 acceptées, 5 refusées, stock 0 |
-| 5. Audit S3 | ✅ | ✅ | ✅ |
+Sur AWS, un premier passage du serverless et de l'hybride a échoué à deux scénarios : le 15 (délai réseau dépassé sur le poste de test ; la Lambda `api` n'a jamais dépassé 1,4 s) et le 35 (la vérification X-Ray cherchait un segment au nom de la machine Step Functions, que le service n'émet pas : elle vérifie désormais que la trace de l'exécution traverse la machine, étape par étape). Les deux suites ont été rejouées en entier ; dans celle du serverless, le scénario 35 a été interrompu par une coupure réseau du poste puis rejoué seul (scénarios 32 à 36, en fin de fichier).
 
-**Les 429 du serverless :**
+### D.3 Test de charge k6
 
-- **Cause :** le scénario envoie 23 requêtes en même temps. Or le compte, récent et sur le
-  plan gratuit, est limité à **10 exécutions Lambda simultanées**
-  (`aws lambda get-account-settings` : `ConcurrentExecutions = 10`). Lambda rejette donc
-  le surplus avec `429 Too Many Requests` *avant* d'exécuter le code.
-- **Ce qui reste correct :** le stock final est exactement cohérent, et aucune commande
-  n'a été perdue ni comptée deux fois. L'invariant métier tient.
-- **Comment le test les traite :** lors d'un premier passage, le scénario était compté en
-  ❌. Ce n'est pourtant pas une erreur de la boutique, mais un refus de la plateforme. Le
-  script les compte maintenant à part, les signale par ⚠️ dans le scénario et dans le
-  résumé, et ne fait échouer le scénario que pour une autre réponse ou un stock incohérent.
-- **Correctifs possibles :**
-  - demander l'augmentation du quota (*Service Quotas*, quota par défaut 1 000) ;
-  - faire réessayer le client sur 429 ;
-  - ou passer les écritures sur EC2, ce que fait l'hybride : **0 refus** pour la même rafale.
+Script réutilisable : [`scripts/load/k6_shop.js`](../scripts/load/k6_shop.js), lancé par
+[`scripts/load_test.sh`](../scripts/load_test.sh) (image Docker `grafana/k6`, rien à
+installer). Le parcours ne fait que des lectures (catalogue, recherche, fiche, avis,
+suivi, santé) : aucune commande ni aucun paiement n'est créé. Les solutions sont testées
+l'une après l'autre pour ne pas se partager le quota Lambda pendant la mesure ; le
+nombre d'utilisateurs virtuels est plafonné à 8 pour la même raison.
 
-**Captures du front, solution VM :**
+p95 par page (ms) :
 
-![Catalogue (VM)](captures/vm_1_catalogue.png)
+| Solution | catalogue | recherche | fiche | avis | suivi | sante |
+|---|---|---|---|---|---|---|
+| Serverless | 309 | 332 | 193 | 162 | 225 | 153 |
+| VM | 266 | 251 | 261 | 199 | 257 | 101 |
+| Hybride | 303 | 321 | 163 | 155 | 158 | 156 |
 
-![Commande passée (VM)](captures/vm_2_commande.png)
+Sorties : [`captures/k6_resume.md`](captures/k6_resume.md), [`captures/k6_aws.txt`](captures/k6_aws.txt) (sortie de k6) et le résumé JSON de chaque solution : [`captures/k6_serverless.json`](captures/k6_serverless.json), [`captures/k6_vm.json`](captures/k6_vm.json), [`captures/k6_hybrid.json`](captures/k6_hybrid.json).
 
-![Commande expédiée (VM)](captures/vm_3_expediee.png)
+**Lecture des résultats.** À 8 utilisateurs virtuels (environ 14 requêtes par seconde,
+le rythme étant fixé par les pauses du parcours), les trois solutions répondent à 100 %
+sans aucun refus : une requête Lambda dure environ 0,1 s, soit à peine 1 à 2 exécutions
+simultanées en moyenne, loin du quota de 10. Les médianes (47 à 56 ms) et les p95
+(241 à 272 ms) sont du même ordre : à ce débit, la latence est surtout celle du réseau
+et de CloudFront. La VM a la p95 la plus basse (pas de démarrage à froid) ; les maximums
+du serverless (514 ms) et de l'hybride (1,1 s) sont des démarrages à froid de Lambda.
+Le contraste avec le scénario 4 est net : 23 commandes envoyées **au même instant**
+dépassent le quota et le serverless en refuse 13 (429), alors qu'un trafic soutenu mais
+régulier passe sans refus. Le quota limite les rafales, pas le débit moyen. Le second
+compte utilisé pour la session finale a le même quota (10) que le premier : ces chiffres
+sont comparables à ceux des sessions précédentes.
 
-**Captures du front, solution serverless :**
+## Annexe E. Déroulement du projet, bugs trouvés et incident CloudTrail
 
-![Catalogue (serverless)](captures/serverless_1_catalogue.png)
+### E.1 Déroulement
 
-![Commande passée (serverless)](captures/serverless_2_commande.png)
+1. **Version initiale** (commit de référence) : réseau et solution VM, données, bus
+   d'événements et audit, serverless, supervision et sécurité, stack locale Docker, puis
+   solution hybride et extension de la stack locale aux trois solutions.
+2. **Lots fonctionnels**, chacun développé et testé en local, puis validé sur AWS dans
+   une seule session (`up.sh`, tests, `down.sh`, vérification que le compte est vide),
+   et enregistré par un commit de sauvegarde (regroupés à la fin en un seul commit) :
 
-![Commande expédiée (serverless)](captures/serverless_3_expediee.png)
+   | Lot | Fonctionnalités |
+   |---|---|
+   | 0 | Code commun regroupé dans `src/shop` (une seule implémentation des règles) |
+   | 1 | Stock par entrepôt, back-office, mouvements, annulation, réservations, alertes, CSV, valorisation |
+   | 2a | Comptes Cognito, recherche et filtres, codes promo, avis, liste de souhaits |
+   | 2b | Images produit (miniatures), suivi en temps réel par WebSocket |
+   | 3a | Paiement Stripe, frais de port, workflow jusqu'à la livraison, e-mails SES, facture PDF |
+   | 3b | Retours et remboursements, réapprovisionnement fournisseur |
+   | 4 | Tableau de bord, rapport quotidien, Athena + Glue, X-Ray, GitHub Actions, Grafana, k6 |
+3. **Finalisation** : suite complète deux fois en local, session AWS finale avec k6 et
+   captures, rapport, PDF, regroupement des commits. Une première session finale a
+   échoué faute de quota SES (ci-dessous) ; elle a été refaite, après correction, sur un
+   second compte AWS aux quotas identiques (10 Lambdas simultanées, SES en bac à sable),
+   dont les ressources préexistantes (d'un autre projet) n'ont pas été touchées.
 
-**Captures du front, solution hybride.** Le badge indique `HYBRID`. Sur la dernière
-capture, « Baskets Trail Graphite » est affiché épuisé : le scénario 4 a vidé ce stock
-dans RDS, et la projection l'a recopié dans DynamoDB.
-
-![Catalogue (hybride)](captures/hybrid_1_catalogue.png)
-
-![Commande passée (hybride)](captures/hybrid_2_commande.png)
-
-![Commande expédiée (hybride)](captures/hybrid_3_expediee.png)
-
-**Tableau de bord CloudWatch, pendant les tests** (heures en UTC). Les pics entre 13:21 et
-13:31 viennent du premier passage et des mesures de latence du §7.2, faites avant la
-correction ; celui de 13:34 vient du passage final.
-
-![Commandes publiées sur SNS](captures/cloudwatch_sns_commandes.png)
-
-![Messages en attente dans SQS](captures/cloudwatch_sqs_files.png)
-
-![Invocations et erreurs Lambda](captures/cloudwatch_lambda_invocations.png)
-
-![EC2 + RDS (VM et hybride) : requêtes ALB, CPU EC2 et RDS](captures/cloudwatch_vm_alb_cpu.png)
-
-**Audit S3 :** la liste complète est dans
-[`captures/audit_s3_liste.txt`](captures/audit_s3_liste.txt) : 291 fichiers après tous les
-tests de la journée. Chaque commande créée a bien produit ses 3 événements, dans les trois
-solutions :
-
-| Solution | `ORDER_CREATED` | `ORDER_PACKED` | `ORDER_SHIPPED` |
-|---|---|---|---|
-| hybride | 47 | 47 | 47 |
-| serverless | 18 | 18 | 18 |
-| VM | 32 | 32 | 32 |
-
-Le fichier [`captures/audit_s3_exemple.txt`](captures/audit_s3_exemple.txt) contient un
-événement complet. Voici un extrait d'un `ORDER_CREATED` hybride, qui porte le stock RDS
-et sa version pour la projection :
-
-```json
-{
-    "event_type": "ORDER_CREATED",
-    "occurred_at": "2026-10-27T13:39:57+00:00",
-    "source": "hybrid",
-    "order": { "order_id": "ORD-8B0DFF2BDA", "status": "CONFIRMED", "total": 153.9, "backend": "hybrid" },
-    "stock": [
-        { "product_id": "TS-003", "stock": 30, "version": 15 },
-        { "product_id": "BK-001", "stock": 49, "version": 1 }
-    ]
-}
-```
-
-*(La commande est abrégée ici ; le fichier réel contient aussi les lignes de commande, le
-client et l'historique.)*
-
-### 7.2 Bugs trouvés par les tests, et corrigés
+### E.2 Bugs trouvés par les tests (version initiale)
 
 **1. Pool de connexions épuisé (solution VM).**
 
@@ -554,7 +811,24 @@ commun au serverless et à l'hybride).**
 - **Correction :** en cas d'erreur, le front garde le dernier état affiché (d'abord la
   réponse du POST) et réessaie au tour suivant.
 
-### 7.3 Incident : double `terraform apply`, diagnostiqué avec CloudTrail
+### E.3 Bugs trouvés pendant les lots
+
+| Lot | Symptôme | Cause et correction |
+|---|---|---|
+| 2b | Création de compte de test en échec quand le mot de passe aléatoire commençait par « - » | L'AWS CLI le lisait comme une option : `--password=<valeur>` ; le compte est enregistré pour nettoyage avant de fixer le mot de passe |
+| 2b | Scénario 21 : original d'image « public » sur la VM | C'était la page `index.html` renvoyée par défaut ; le test compare désormais le contenu |
+| 3a | E-mails en échec (« Type non sérialisable float ») | Montants relus en `Decimal(str(…))` dans `shop/mail.py` |
+| 3a | Paiement en 409 sous concurrence (serverless) | Conflit de transaction DynamoDB traité comme refus : boucle de nouvel essai dans `mark_paid` |
+| 3a | Scénarios hybrides en échec juste après la création | Commande pas encore projetée : le test attend la projection |
+| 3b | Scénario 10 (réservations) en échec | Le réappro automatique ajoutait du stock pendant le test : produits de test sans seuil d'alerte |
+| 3b | Scénario 12 dépendant d'un lancement précédent | Identifiants de produit limités à 900 valeurs par préfixe : format élargi et identifiants aléatoires uniques ([`scripts/testids.py`](../scripts/testids.py)) |
+| 4 | Rapport quotidien sans e-mail en local | L'initialisation locale ne mettait pas à jour le filtre d'un abonnement SNS existant |
+| 4 | Validation finale locale : erreurs 500 et 502 en série au milieu des tests | Le noyau de la VM Docker tuait LocalStack faute de mémoire (OOM) : une trentaine de conteneurs Lambda restaient gardés au chaud 10 min. `LAMBDA_KEEPALIVE_MS` réduit à 1 min |
+| Final | Session AWS : 429 en cascade sur les trois solutions (API, lecture hybride, e-mails, miniatures, WebSocket) | Quota SES du bac à sable dépassé (200 e-mails par 24 h, 1 par seconde) : chaque envoi refusé était réessayé et la Lambda `mailer` gardait ~7 s une des 10 exécutions du compte. Corrections : au plus 2 exécutions simultanées par file SQS (`maximum_concurrency`), nouveaux essais SES limités, et aucun envoi vers les domaines réservés (`example.com`) des commandes de test |
+| Final | `up.sh` interrompu : `AddPermission` en 409 (« concurrent update operation ») sur la Function URL | Mise à jour de la Lambda encore en cours côté AWS : erreur transitoire, un second `terraform apply` dans la même session a terminé le déploiement |
+| 4 | Alerte de retour en stock sans e-mail | L'adresse du client n'était pas enregistrée avec le souhait : ajoutée, et vérifiée par le scénario 28 |
+
+### E.4 Incident : double `terraform apply`, diagnostiqué avec CloudTrail
 
 - **Symptôme :** un `./up.sh` échouait avec des dizaines d'erreurs `AlreadyExists`
   (DynamoDB, ALB, IAM, CloudTrail, CloudFront…). Or l'état Terraform local ne connaissait
@@ -587,144 +861,227 @@ commun au serverless et à l'hybride).**
   résolu.
 - **Leçons :**
   1. **un état Terraform local ne protège pas contre deux exécutions simultanées**. Il
-     faut un backend partagé avec verrou (§9) ;
+     faut un backend partagé avec verrou (§7) ;
   2. CloudTrail est l'outil qui répond à « qui a créé quoi, quand et d'où ».
 
-### 7.4 Deux services sur une `t3.micro` : mémoire et connexions RDS
+### E.5 Deux services sur une `t3.micro` : mémoire et connexions RDS
 
-La solution hybride ajoute un 2e service sur les mêmes EC2 (1 Go de RAM) et une 2e base sur
-la même instance RDS. Nous l'avons mesuré pendant le passage final des tests, les trois
-solutions testées en même temps.
-
-**Méthode :** un petit script envoyé sur l'instance par **SSM Run Command** (gratuit, sans
-SSH) relève toutes les 2 s, pendant 220 s (109 relevés) :
-
-- la mémoire de l'instance (`/proc/meminfo`) ;
-- la mémoire de chaque service systemd (cgroup) ;
-- les connexions PostgreSQL par base (`pg_stat_activity`).
-
-Les métriques CloudWatch d'EC2 et de RDS complètent ces relevés. Le détail est dans
-[`captures/ec2_rds_ressources.txt`](captures/ec2_rds_ressources.txt).
+Relevés faits pendant le test de charge k6 de la session finale (solutions VM puis
+hybride), par un petit script envoyé sur l'instance par **SSM Run Command** (sans SSH) :
+mémoire de l'instance et de chaque service systemd (cgroup), connexions PostgreSQL par
+base (`pg_stat_activity`), toutes les 2 s (150 relevés). Détail :
+[`captures/ec2_rds_ressources.txt`](captures/ec2_rds_ressources.txt) ; métriques CloudWatch :
+annexe C.
 
 | Mesure | Résultat |
 |---|---|
-| Mémoire de l'instance | 455 à 461 Mo utilisés sur 913 Mo, swap 0 : **environ 450 Mo de marge** |
-| Service `shop` (VM, port 8080) | 51 à 54 Mo |
-| Service `shop-hybrid` (port 8081) | 51 à 53 Mo |
-| CPU EC2 / CPU RDS (max par minute) | 6,2 % / 8,4 % |
-| Mémoire libérable de RDS | 185 Mo au minimum |
-| Connexions PostgreSQL relevées | 5 en permanence : 1 par base applicative (`shop`, `shop_hybrid`), 2 pour la supervision RDS, 1 pour l'échantillonneur ; CloudWatch `DatabaseConnections` : 3 au plus |
+| Mémoire de l'instance | 507 à 511 Mo utilisés sur 913 Mo, swap 0 Mo |
+| Service `shop` (VM, port 8080) | 72 à 73 Mo |
+| Service `shop-hybrid` (port 8081) | 79 à 80 Mo |
+| Connexions PostgreSQL par base | `(système)` 5 à 5, `postgres` 1 à 1, `rdsadmin` 2 à 2, `shop` 1 à 7, `shop_hybrid` 1 à 1 |
 | Limite `max_connections` de `db.t3.micro` | 81 |
 
-**Interprétation :**
+**Lecture :** un second service sur la même `t3.micro` coûte une soixantaine de Mo, et
+la mémoire garde une large marge. Les connexions sont bornées par les pools (10 par
+service) : 2 services × 2 instances au plus × 10 = 40 connexions, sous la limite de 81.
+Au-delà (plus d'instances ou de services), il faudrait réduire les pools ou passer par
+RDS Proxy.
 
-- **La mémoire n'est pas un problème :** un 2e service ne coûte qu'environ 53 Mo.
-- **Les connexions :** chaque service garde 1 connexion ouverte (le minimum du pool). Les
-  connexions supplémentaires ouvertes pendant une rafale sont refermées aussitôt, plus vite
-  que l'intervalle des relevés : les pics réels sont donc sous-estimés. Ils restent bornés
-  par le pool, à 10 par service : 2 services × 2 instances (maximum de l'ASG) × 10 = **40
-  connexions au plus**, sous la limite de 81.
-- **Ce qui ferait sauter cette marge :** monter `vm_max_size` au-delà de 4, ou ajouter
-  d'autres services. Il faudrait alors réduire les pools ou passer par **RDS Proxy**.
+## Annexe F. Coûts et sécurité en détail
 
-## 8. Mode d'emploi
+### F.1 Coût par service
 
-### Prérequis
+| Service | Tarif public (eu-west-3, ordre de grandeur) | Usage du projet | Coût |
+|---|---|---|---|
+| ALB | ≈ 0,025 $/h + LCU | 1, partagé VM et hybride | ≈ 0,025 $/h |
+| EC2 `t3.micro` | ≈ 0,012 $/h | 1 instance (2 au plus) | ≈ 0,012 $/h |
+| RDS `db.t3.micro` | ≈ 0,02 $/h | 1 instance, 2 bases | ≈ 0,02 $/h |
+| IPv4 publiques | 0,005 $/h par adresse | ALB (2 AZ) + EC2 | ≈ 0,015 $/h |
+| Lambda | 1 M de requêtes et 400 000 Go-s gratuits par mois, à vie | quelques milliers d'appels | 0 $ |
+| DynamoDB (à la demande, `PAY_PER_REQUEST`) | facturé à la requête (de l'ordre du dollar par million d'écritures, bien moins pour les lectures) ; 25 Go de stockage gratuits | 3 tables, quelques milliers de requêtes par session | quelques centimes au plus |
+| SNS, SQS | 1 M de publications / requêtes gratuites par mois | quelques milliers | 0 $ |
+| S3 | 0,024 $/Go-mois ; requêtes à l'unité | quelques Mo | < 0,01 $ |
+| CloudFront | 1 To et 10 M de requêtes gratuits par mois | quelques Mo | 0 $ |
+| Step Functions (Standard) | 4 000 transitions gratuites par mois, puis 0,025 $ / 1 000 | 9 transitions par commande | 0 $ |
+| EventBridge Scheduler | 14 M d'appels gratuits par mois | 3 par jour | 0 $ |
+| SES | 0,10 $ / 1 000 e-mails | quelques dizaines | < 0,01 $ |
+| Cognito | 10 000 utilisateurs actifs gratuits par mois | comptes de test | 0 $ |
+| API Gateway WebSocket | 1 $ / M de messages, 0,25 $ / M de minutes de connexion | quelques centaines | < 0,01 $ |
+| Athena | 5 $ / To lu, 10 Mo au minimum par requête | quelques requêtes | ≈ 0 $ |
+| Glue Data Catalog | 1 M d'objets gratuits | 1 base, 1 table | 0 $ |
+| X-Ray | 100 000 traces gratuites par mois | quelques milliers | 0 $ |
+| CloudWatch | 10 alarmes gratuites, puis 0,10 $/mois chacune | une vingtaine, au prorata des heures | quelques centimes |
+| CloudTrail | Premier trail de gestion gratuit | 1 trail | 0 $ (stockage S3 minime) |
 
-- Terraform 1.6 ou plus ;
-- AWS CLI configurée (`aws configure`), région `eu-west-3` ;
-- `curl` et `python3` pour les tests ;
-- Docker pour la version locale.
+Les montants horaires sont ceux du prix public, payés ici par les crédits du plan
+gratuit ; ils sont à confirmer sur la page de prix de chaque service.
 
-### Lancement en local (sans AWS, sans coût)
+### F.2 Adaptation au Free Tier
+
+| Élément | Choix par défaut | Raison | Pour l'activer |
+|---|---|---|---|
+| MSK (Kafka) | désactivé | Pas d'offre gratuite, ≈ 0,10 $/h par broker, 20 à 30 min de création ; le code est prêt | `enable_msk = true` |
+| API Gateway REST | Function URL derrière CloudFront | Gratuite et suffisante | — |
+| NAT Gateway | aucune | ≈ 0,05 $/h ; EC2 en sous-réseau public fermé par security group, endpoints *gateway* S3 et DynamoDB gratuits | — |
+| RDS Multi-AZ | Single-AZ | Double le prix | `db_multi_az = true` |
+| 2e instance EC2 permanente | `vm_min_size = 1` (2 au plus) | Une seule instance couverte | `vm_min_size = 2` |
+| Clé KMS client | clés gérées par AWS | 1 $/mois | `enable_kms_cmk = true` |
+| Domaine | URL `*.cloudfront.net` | Zone Route 53 : 0,50 $/mois | `route53_zone_name` |
+| Logs CloudWatch | 3 jours de rétention | Stockage limité | `log_retention_days` |
+| Athena | requête annulée au-delà de 100 Mo, résultats supprimés après 1 jour | Garde-fou de coût | — |
+| Glue | projection de partitions, pas de crawler | Un crawler coûte ≈ 0,07 $ par passage | — |
+
+**Le plan gratuit à crédits.** Le compte a été créé le 22 octobre 2026. Il dépend donc du **nouveau Free Tier**, en
+vigueur depuis juillet 2025 :
+
+- **Le plan gratuit dure 6 mois** et donne des **crédits** en dollars : 100 $ à
+  l'inscription, et jusqu'à 100 $ de plus en explorant certains services. Ces crédits
+  remplacent les anciens « 12 mois gratuits » par service (750 h EC2, 750 h RDS, etc.).
+  Ce qui n'est pas gratuit à vie (ALB, EC2, RDS, IPv4 publiques) est payé avec ces crédits.
+- **Les offres « toujours gratuites » restent valables** : 1 M de requêtes Lambda,
+  25 Go de stockage DynamoDB, 1 M de publications SNS, 1 M de requêtes SQS, 1 To
+  CloudFront, etc.
+- **État du compte**, lu avec `aws freetier get-account-plan-state` : plan `FREE`, statut
+  `ACTIVE`, **179,97 $ de crédits restants**, expiration le **22/04/2027**.
+- **Conséquence pour le projet :** les ressources « payantes » des solutions VM et
+  hybride (ALB, EC2, RDS) ne facturent rien tant que les crédits durent. Le `down` systématique reste la règle, pour
+  ne pas les consommer inutilement.
+- **Limite des comptes récents :** ce plan applique un quota de **10 exécutions Lambda
+  simultanées**, partagé par toutes les Lambdas du compte. Cela a une conséquence directe
+  sur le test de charge (§6), et c'est l'une des raisons de la solution hybride.
+
+### F.3 Sécurité en détail
+
+**Responsabilité partagée.** AWS est responsable de la sécurité *du* cloud (datacenters,
+matériel, hyperviseur, et OS des services managés : Lambda, RDS, DynamoDB…). Nous
+sommes responsables de la sécurité *dans* le cloud : identités, réseau, données, OS des
+EC2, code.
+
+**Rôles IAM** (un par Lambda et un pour les EC2, ARN précis) :
+
+| Rôle | Droits principaux |
+|---|---|
+| Lambda `api` | DynamoDB (lecture, écriture, transaction) sur sa table ; `sns:Publish` ; S3 sur `exports/ imports/ invoices/ reports/` et `originals/` ; lecture du seul paramètre SSM Stripe |
+| Lambda `hybrid-read` | `dynamodb:GetItem/Query` sur la table hybride : **aucune écriture** (et `READ_ONLY` dans le code) |
+| Lambdas `processor` | `states:StartExecution` sur leurs machines ; lecture de **leur** file |
+| Lambdas `fulfillment`, `supplier` | `GetItem/UpdateItem` (et `PutItem/DeleteItem` pour les bons) sur leur table ; `sns:Publish` |
+| Lambda `audit` | `s3:PutObject` sur `events/*` uniquement |
+| Lambda `mailer` | `ses:SendRawEmail` sur la seule identité vérifiée |
+| Lambdas `reporter` | lecture de leur table ; `s3:PutObject` sur `reports/*` ; `sns:Publish` |
+| EC2 | lecture du code dans S3, des seuls paramètres SSM utiles, de **ses** files ; `sns:Publish` ; écritures conditionnelles sur la table hybride ; Session Manager |
+| Step Functions, Scheduler | `lambda:InvokeFunction` (et `sqs:SendMessage` pour la VM) sur leurs seules cibles ; X-Ray |
+
+Toutes les Lambdas ont aussi `xray:PutTraceSegments` (pas d'ARN de ressource pour cette
+action).
+
+**Jetons.** La vérification est faite dans `shop/auth.py`, sans dépendance : RS256
+uniquement (jamais `none` ni HS256), signature RSA vérifiée avec la clé du JWKS désignée
+par le `kid`, émetteur, expiration (60 s de tolérance), client (`aud` ou `client_id`) et
+`token_use`. Seul un émetteur `cognito-idp.<région>.amazonaws.com` est accepté, sauf avec
+`ALLOW_LOCAL_AUTH=1`, défini uniquement dans la stack Docker.
+
+**Paiement.** Les données de carte ne passent que par Stripe.js (SAQ A). Le
+`client_secret` n'est renvoyé qu'à la création de la commande ; `confirm-payment` relit
+le PaymentIntent (statut, montant, devise, numéro de commande) ; les clés d'idempotence
+évitent tout double paiement ou double remboursement. La clé secrète est dans SSM, lue à
+l'exécution ; seules les clés `pk_test_` et `sk_test_` sont acceptées par Terraform.
+
+**Réseau.** CloudFront ajoute un en-tête secret (`X-Origin-Verify`) vérifié par la Lambda
+et par l'ALB : appeler la Function URL ou l'ALB directement renvoie 403. La règle hybride
+de l'ALB exige aussi `X-Shop: hybrid`. L'ALB n'accepte que la *prefix list* CloudFront ;
+RDS n'accepte que le security group des EC2.
+
+**Chiffrement.** Au repos : DynamoDB, RDS, SNS, SQS, S3, SSM SecureString (clé client
+KMS en option). En transit : HTTPS imposé par CloudFront, TLS pour tous les appels AWS
+et Stripe.
+
+**Traçabilité.** CloudTrail (validation d'intégrité, 30 jours), logs CloudWatch, alarmes
+(DLQ non vide, erreurs Lambda, cibles ALB), traces X-Ray, archive d'audit des événements.
+
+## Annexe G. Présenté mais non implémenté
+
+Ces services ont été étudiés pour la boutique mais pas déployés (coût, délai, ou hors
+périmètre du sujet). Chaque ligne indique où ils se brancheraient.
+
+| Service | Usage pour Threadly | Intégration envisagée | Pourquoi pas ici |
+|---|---|---|---|
+| **Webhook Stripe** (production) | Confirmer le paiement dès qu'il réussit | Point d'entrée `POST /api/stripe/webhook` vérifiant la signature (`Stripe-Signature`, secret dans SSM), qui appelle la même confirmation idempotente que `confirm-payment` | Point d'entrée public et secret de plus ; la purge suffit en mode test |
+| **Amazon Bedrock** | Rédaction des descriptions produit, assistant de recherche en langage naturel | Lambda appelant un modèle de langage de Bedrock depuis le back-office ; garde-fous Bedrock Guardrails | Facturé au jeton, pas d'offre gratuite |
+| **Amazon Personalize** | Recommandations « vous aimerez aussi » | Import des événements d'audit (S3) comme interactions ; campagne interrogée par l'API | Entraînement et campagne facturés à l'heure |
+| **Amazon Forecast** | Prévision de la demande pour régler les seuils de réappro | Historique des ventes (Athena) → prévisions → seuils par produit. Forecast n'est plus ouvert aux nouveaux clients : SageMaker Canvas en est le remplaçant | Service fermé aux nouveaux comptes ; coût d'entraînement |
+| **AWS WAF** | Protection contre les bots, l'injection, les abus de l'API | Web ACL sur les distributions CloudFront (règles gérées, limitation de débit) | ≈ 5 $/mois par ACL + règles |
+| **Amazon QuickSight** | Tableaux de bord métier pour la direction | Source Athena (table `events`) | Abonnement par utilisateur |
+| **AWS Secrets Manager** | Secrets avec rotation automatique (mot de passe RDS) | Remplace SSM SecureString ; rotation par Lambda | 0,40 $/mois par secret ; SSM gratuit suffit |
+| **Amazon OpenSearch** | Recherche plein texte tolérante aux fautes, facettes | Index alimenté par les événements `PRODUCT_CHANGED` | Domaine facturé à l'heure |
+| **Odoo / ERP** | Comptabilité, achats, fournisseurs réels | Abonnement aux événements (`ORDER_PAID`, `PURCHASE_ORDER_CREATED`) par une file SQS dédiée ; API XML-RPC d'Odoo | Hors périmètre ; le réappro simule le fournisseur |
+
+## Annexe H. Mode d'emploi pour le correcteur
+
+### H.1 Prérequis
+
+- Terraform ≥ 1.9, AWS CLI configurée (`aws configure`, région `eu-west-3`) ;
+- `python3`, `curl` ; Docker (stack locale, k6, actionlint).
+
+### H.2 En local, sans AWS ni coût
 
 ```bash
 docker compose -f local/docker-compose.yml up --build -d   # environ 1 min au premier lancement
-./scripts/test_scenario.sh http://localhost:8080           # solution VM
-./scripts/test_scenario.sh http://localhost:8081           # solution serverless
-./scripts/test_scenario.sh http://localhost:8082           # solution hybride
-docker compose -f local/docker-compose.yml down -v         # arrêter et tout effacer
+./scripts/test_scenario.sh http://localhost:8080           # VM
+./scripts/test_scenario.sh http://localhost:8081           # serverless
+./scripts/test_scenario.sh http://localhost:8082           # hybride
+./scripts/load_test.sh                                     # k6 sur les trois
+docker compose -f local/docker-compose.yml down -v         # tout arrêter et effacer
 ```
 
-Les trois solutions tournent en local, chacune sur son port, sans compte AWS :
-
-| Composant AWS | Équivalent local |
+| Adresse | Contenu |
 |---|---|
-| CloudFront (deux distributions) | **nginx** ([`local/nginx.conf`](../local/nginx.conf)) : port 8081 pour le serverless, 8082 pour l'hybride, avec le même routage par chemin (`POST /api/orders` → EC2, le reste de `/api/*` → Lambda) |
-| S3 (front) | `src/frontend`, servi par nginx |
-| EC2 | `app.py` dans un conteneur : port 8080 (VM) et service hybride (base `shop_hybrid`) |
-| RDS | PostgreSQL 16 |
-| Lambda, DynamoDB, SNS, SQS, S3 (audit), SSM | **LocalStack**, édition communautaire gratuite |
-| Terraform | [`local/init_aws.py`](../local/init_aws.py), qui crée les mêmes files, filtres, tables et Lambdas |
+| http://localhost:8080 · :8081 · :8082 | Boutique VM, serverless, hybride (back-office : `/admin.html`) |
+| http://localhost:3000 | **Grafana** : tableau de bord « Threadly : ventes et stock » (bases VM et hybride, compte en lecture seule) |
+| http://localhost:4566/_aws/ses | E-mails envoyés (LocalStack) |
+| http://localhost:9100 | Fournisseur d'identité local : `admin@threadly.local` / `admin-local-pass`, `magasinier@threadly.local` / `mag-local-pass`, `client@threadly.local` / `client-local-pass` |
+| http://localhost:12111 | Faux Stripe local (cartes `pm_card_visa`, `pm_card_chargeDeclined`) |
 
-- **Le code n'est pas dupliqué :** les six Lambdas, `app.py` et le front sont exactement
-  ceux déployés sur AWS.
-- **Ce qui est propre au local** :
-  - la description des ressources dans `init_aws.py`, l'équivalent de Terraform ;
-  - la configuration nginx.
+LocalStack (édition communautaire 4.14.0) simule Lambda, DynamoDB, SNS, SQS, S3, SSM, Step
+Functions et SES avec le code exact de `src/` ; nginx joue CloudFront. Athena, Glue,
+X-Ray et EventBridge Scheduler n'y existent pas : le rapport s'y déclenche à la demande.
 
-**Les trois solutions passent les 5 scénarios en local**, audit S3 compris (sortie
-complète : [`captures/tests_local.txt`](captures/tests_local.txt)). Le script lit le bucket
-d'audit dans LocalStack.
+### H.3 Sur AWS
 
-**Trois points appris en construisant cette stack :**
+1. **Configuration** : `cp infra/terraform.tfvars.example infra/terraform.tfvars`, puis
+   renseigner `notification_email` et le **paiement** :
+   - `payment_mode = "stripe"` (par défaut) avec les clés **test** du tableau de bord
+     Stripe (`stripe_publishable_key = "pk_test_…"`, `stripe_secret_key = "sk_test_…"`) ;
+     sans clés, `terraform plan` s'arrête avec un message clair ;
+   - ou `payment_mode = "simulated"` sans compte Stripe (commandes confirmées aussitôt).
+2. **Vérification SES (une seule fois)** :
+   ```bash
+   aws sesv2 create-email-identity --region eu-west-3 --email-identity vous@example.com
+   # cliquer sur le lien reçu, puis vérifier :
+   aws sesv2 get-email-identity --region eu-west-3 --email-identity vous@example.com --query VerifiedForSendingStatus
+   ```
+   `up.sh` refuse de déployer tant que l'identité n'est pas vérifiée ; `down.sh` ne la
+   supprime jamais.
+3. **Déploiement** : `./up.sh` (10 à 15 min, **un seul à la fois**), puis confirmer
+   l'abonnement SNS reçu par e-mail (alarmes).
+4. **Comptes** : créer les utilisateurs dans le pool Cognito et les ajouter aux groupes
+   `admin` ou `magasinier` (les tests créent et suppriment leurs propres comptes).
+5. **Tests** :
+   ```bash
+   for u in serverless_url vm_url hybrid_url; do
+     ./scripts/test_scenario.sh "$(terraform -chdir=infra output -raw $u)"
+   done
+   ./scripts/load_test.sh aws                          # k6, 8 utilisateurs virtuels au plus
+   ./scripts/daily_report.sh serverless|vm|hybrid      # rapport quotidien à la demande
+   ```
+   Paiement de test dans le navigateur : carte `4242 4242 4242 4242`, date future,
+   n'importe quel code.
+6. **Suppression** : `./down.sh` (environ 10 min), puis
+   `./scripts/cleanup_orphans.sh` (simulation) pour vérifier qu'il ne reste rien.
 
-- **LocalStack exige désormais un jeton,** même pour l'usage gratuit : sa version actuelle
-  refuse de démarrer sans `LOCALSTACK_AUTH_TOKEN`. La stack est donc **épinglée sur
-  4.14.0**, la dernière version communautaire sans jeton. Une version récente reste
-  utilisable avec un compte LocalStack gratuit (variables `LOCALSTACK_VERSION` et
-  `LOCALSTACK_AUTH_TOKEN`).
-- **Sans quota, une rafale de requêtes fait tomber le local :** chaque exécution
-  simultanée lance un conteneur, et les démarrages à froid dépassent le délai de
-  LocalStack (erreurs 500). Le local applique donc **le même quota que le compte AWS**,
-  10 exécutions simultanées. LocalStack signale alors le refus par un 500 de type
-  `TooManyRequestsException`, là où AWS renvoie un 429 ; le script compte les deux comme
-  « limités par Lambda ».
-- **L'arrêt doit laisser du temps à LocalStack :** il supprime à l'arrêt les conteneurs
-  Lambda qu'il a lancés, mais pas dans les 10 s accordées par défaut. Sans
-  `stop_grace_period: 60s`, des dizaines de conteneurs restaient en marche après le `down`.
+### H.4 Intégration continue
 
-### Déploiement sur AWS
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) : `terraform fmt -check` et
+`terraform validate`, puis la stack Docker et tous les scénarios, un job par solution en
+parallèle (runners ARM, comme les Lambdas). Aucun secret ni accès AWS n'est nécessaire.
 
-```bash
-cp infra/terraform.tfvars.example infra/terraform.tfvars    # renseigner notification_email
-./up.sh          # environ 10 à 15 min ; affiche les URLs des trois solutions
-```
-
-Lancer `up.sh` **une seule fois, dans un seul terminal** (voir §7.3). Ensuite, confirmer
-l'e-mail « AWS Notification – Subscription Confirmation » pour recevoir les confirmations
-de commande et les alarmes.
-
-### Tests sur AWS
-
-```bash
-./scripts/test_scenario.sh "$(terraform -chdir=infra output -raw vm_url)"
-./scripts/test_scenario.sh "$(terraform -chdir=infra output -raw serverless_url)"
-./scripts/test_scenario.sh "$(terraform -chdir=infra output -raw hybrid_url)"
-terraform -chdir=infra output dashboard_url    # tableau de bord CloudWatch
-```
-
-### Suppression
-
-```bash
-./down.sh        # environ 10 min ; plus aucune ressource facturable
-```
-
-## 9. Limites et améliorations
-
-| Limite | Amélioration proposée |
-|---|---|
-| État Terraform local : deux `apply` simultanés créent des doublons orphelins (§7.3) | **Backend S3 avec verrou** (`backend "s3" { use_lockfile = true }`, Terraform ≥ 1.10), bucket versionné : un second `apply` est refusé tant que le premier tient le verrou |
-| Quota de 10 Lambda simultanées : 429 en charge (§7.1) | Demander l'augmentation du quota ; réessai avec *backoff* côté front sur 429 ; *reserved concurrency* pour protéger la Lambda `api` |
-| RDS Single-AZ, sans sauvegarde | `db_multi_az = true` et sauvegardes automatiques en production ; ou Aurora |
-| Pas d'authentification client | Amazon Cognito (gratuit jusqu'à 10 000 utilisateurs actifs par mois) |
-| La Function URL reste joignable directement (403 sans l'en-tête secret) | OAC CloudFront pour Lambda (`AWS_IAM` sur la Function URL), ou WAF sur CloudFront |
-| Le reporting sur l'audit S3 n'est pas branché | Table Athena (ou crawler Glue) sur `events/` : le partitionnement `event_type=/date=` est déjà prêt |
-| Les logs EC2 restent sur l'instance (`journalctl`) | Agent CloudWatch sur les EC2 |
-| Le health check ALB ne vérifie pas la base | Une route `/health` qui teste aussi la connexion RDS |
-| Streaming désactivé | Activer MSK pour la démo, ou le remplacer par Kinesis Data Streams (moins cher) |
-| Pas de CI | Un pipeline GitHub Actions : `terraform fmt/validate`, tests locaux Docker |
-| Hybride : deux modèles de données à garder cohérents ; si la projection tombe en DLQ, le stock affiché reste en retard | Alarme DLQ déjà en place ; ajouter un script de **resynchronisation** (relire le stock RDS et le réécrire dans DynamoDB avec sa version) |
-| Hybride : le quota de 10 Lambda est partagé par toutes les Lambdas du compte, y compris le traitement | *Reserved concurrency* pour `hybrid-projector` et `hybrid-processor`, afin qu'une rafale de lectures ne les prive pas d'exécutions |
-| Hybride : les lectures restent soumises au quota Lambda | Cache CloudFront court (quelques secondes) sur `/api/products`, qui absorberait les pics de lecture du catalogue |
-| Hybride : l'EC2 et RDS sont partagés avec la solution VM | Déployée seule (`deploy_vm = false`), l'hybride garde l'EC2 et RDS pour elle. Le `terraform plan` correspondant a été vérifié : il ne retire que les ressources propres à la VM et au serverless. Ce déploiement n'a pas été testé sur AWS |
+</div>

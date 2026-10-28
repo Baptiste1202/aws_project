@@ -1,38 +1,57 @@
-# Ressources de l'EC2 et de RDS pendant les tests des 3 solutions en parallèle
-# 27/10/2026, 13:34:31 -> 13:38:11 UTC, 109 relevés (un toutes les 2 s), instance t3.micro, RDS db.t3.micro
-# Relevés faits sur l'instance par SSM Run Command : /proc/meminfo, mémoire cgroup
-# de chaque service systemd, connexions par base (pg_stat_activity).
+Ressources de l'instance EC2 (VM et hybride) pendant le test de charge k6 de la session finale
+Relevés toutes les 2 s pendant 300 s par SSM Run Command (sans SSH) : /proc/meminfo, cgroups des
+services systemd, pg_stat_activity sur l'instance RDS.
 
-Mémoire de l'instance : 913 Mo au total, swap 0 Mo
-  utilisée (total - disponible)    min  455 Mo   moyenne  459 Mo   max  461 Mo
-  service shop (VM, :8080)         min   51 Mo   moyenne   54 Mo   max   54 Mo
-  service shop-hybrid (:8081)      min   51 Mo   moyenne   53 Mo   max   53 Mo
+Relevés                    : 150
+Mémoire de l'instance      : 507 à 511 Mo utilisés sur 913 Mo, swap 0 Mo
+Service shop (VM)          : 72 à 73 Mo
+Service shop-hybrid        : 79 à 80 Mo
+Connexions PostgreSQL (min à max) :
+  (système)                5 à 5
+  postgres                 1 à 1
+  rdsadmin                 2 à 2
+  shop                     1 à 7
+  shop_hybrid              1 à 1
 
-Connexions PostgreSQL (toutes bases) : min 5, max 5 ; max_connections = 81
-  maximum par base : postgres 1, rdsadmin 2, shop 1, shop_hybrid 1
-  (postgres = l'échantillonneur, rdsadmin = supervision RDS)
+Limite max_connections de db.t3.micro : 81
 
-Extrait des relevés (un sur dix) :
-  13:34:31  utilisée 455 Mo  shop 52 Mo  shop-hybrid 51 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:34:51  utilisée 455 Mo  shop 52 Mo  shop-hybrid 51 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:35:12  utilisée 458 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:35:32  utilisée 458 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:35:52  utilisée 458 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:36:13  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:36:33  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:36:53  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:37:14  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:37:34  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-  13:37:54  utilisée 460 Mo  shop 54 Mo  shop-hybrid 53 Mo  connexions {'postgres': 1, 'rdsadmin': 2, 'shop': 1, 'shop_hybrid': 1}
-
-CloudWatch sur la même période (maximum par minute) :
-  RDS DatabaseConnections : 3 au plus
-  RDS FreeableMemory      : 185 Mo au minimum
-  CPU EC2                 : 6,2 % au plus
-  CPU RDS                 : 8,4 % au plus
-
-Remarque : chaque service garde 1 connexion ouverte (minimum du pool psycopg2). Les
-connexions supplémentaires ouvertes pendant une rafale de commandes sont refermées dès
-leur libération, plus vite que l'intervalle des relevés : les pics réels sont donc plus
-hauts que ceux mesurés, mais bornés par le pool (10 par service) : 2 services × 2
-instances (maximum de l'ASG) × 10 = 40 connexions, sous la limite de 81 de db.t3.micro.
+Données brutes (JSON) :
+{
+  "samples": 150,
+  "total_mb": 913,
+  "used_mb": [
+    507,
+    511
+  ],
+  "swap_mb": 0,
+  "shop_mb": [
+    72,
+    73
+  ],
+  "hybrid_mb": [
+    79,
+    80
+  ],
+  "connections": {
+    "(système)": [
+      5,
+      5
+    ],
+    "postgres": [
+      1,
+      1
+    ],
+    "rdsadmin": [
+      2,
+      2
+    ],
+    "shop": [
+      1,
+      7
+    ],
+    "shop_hybrid": [
+      1,
+      1
+    ]
+  }
+}
